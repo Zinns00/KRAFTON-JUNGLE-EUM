@@ -9,6 +9,9 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@jitsi/rnnoise-wasm": "^0.2.1",
+    "@ricky0123/vad-react": "^0.0.36",
+    "@ricky0123/vad-web": "^0.0.30",
     "next": "16.1.1",
     "react": "19.2.3",
     "react-dom": "19.2.3"
