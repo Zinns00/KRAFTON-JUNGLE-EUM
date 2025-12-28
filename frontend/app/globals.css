@@ -158,6 +158,13 @@ body {
   outline-offset: 2px;
 }
 
+/* Remove focus outline for inputs with no-focus-outline class */
+input.no-focus-outline:focus,
+input.no-focus-outline:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
 /* Smooth transitions */
 button, a, input {
   transition: all 0.15s ease;
@@ -199,8 +206,21 @@ button, a, input {
   }
 }
 
+@keyframes slide-up {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
 .animate-fade-in {
   animation: fade-in 0.3s ease-out;
+}
+
+.animate-slide-up {
+  animation: slide-up 1s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
 .animate-pulse-ring {
