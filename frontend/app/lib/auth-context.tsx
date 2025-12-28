@@ -34,12 +34,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
 
   const refreshUser = useCallback(async () => {
-    if (!apiClient.isAuthenticated()) {
-      setUser(null);
-      setIsLoading(false);
-      return;
-    }
-
     try {
       const userData = await apiClient.getMe();
       setUser({
@@ -51,7 +45,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
     } catch {
       setUser(null);
-      apiClient.clearAccessToken();
     } finally {
       setIsLoading(false);
     }

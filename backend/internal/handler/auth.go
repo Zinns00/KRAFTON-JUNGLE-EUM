@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"regexp"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -10,6 +11,36 @@ import (
 	"realtime-backend/internal/auth"
 	"realtime-backend/internal/model"
 )
+
+var (
+	// 이메일 검증 정규식
+	emailRegex = regexp.MustCompile(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
+	// 닉네임 검증 (2-50자, 특수문자 제한)
+	nicknameRegex = regexp.MustCompile(`^[a-zA-Z0-9가-힣\s]{2,50}$`)
+)
+
+// validateEmail 이메일 검증
+func validateEmail(email string) bool {
+	if len(email) < 5 || len(email) > 255 {
+		return false
+	}
+	return emailRegex.MatchString(email)
+}
+
+// validateNickname 닉네임 검증
+func validateNickname(nickname string) bool {
+	if len(nickname) < 2 || len(nickname) > 50 {
+		return false
+	}
+	return nicknameRegex.MatchString(nickname)
+}
+
+// sanitizeString XSS 방지를 위한 문자열 정제
+func sanitizeString(s string) string {
+	// HTML 태그 제거
+	re := regexp.MustCompile(`<[^>]*>`)
+	return re.ReplaceAllString(s, "")
+}
 
 // AuthHandler 인증 핸들러
 type AuthHandler struct {
@@ -36,10 +67,8 @@ type GoogleLoginRequest struct {
 
 // AuthResponse 인증 응답
 type AuthResponse struct {
-	User         UserResponse `json:"user"`
-	AccessToken  string       `json:"access_token"`
-	RefreshToken string       `json:"refresh_token,omitempty"`
-	ExpiresIn    int64        `json:"expires_in"`
+	User      UserResponse `json:"user"`
+	ExpiresIn int64        `json:"expires_in"`
 }
 
 // UserResponse 사용자 응답
@@ -77,6 +106,20 @@ func (h *AuthHandler) GoogleLogin(c *fiber.Ctx) error {
 		})
 	}
 
+	// 입력값 검증
+	if !validateEmail(googleUser.Email) {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "invalid email format",
+		})
+	}
+
+	// 닉네임 정제 및 검증
+	sanitizedName := sanitizeString(googleUser.Name)
+	if !validateNickname(sanitizedName) {
+		// 닉네임이 유효하지 않으면 이메일 앞부분 사용
+		sanitizedName = googleUser.Email[:min(len(googleUser.Email), 20)]
+	}
+
 	// 사용자 조회 또는 생성
 	var user model.User
 	result := h.db.Where("email = ?", googleUser.Email).First(&user)
@@ -86,7 +129,7 @@ func (h *AuthHandler) GoogleLogin(c *fiber.Ctx) error {
 		// 신규 사용자 생성
 		user = model.User{
 			Email:      googleUser.Email,
-			Nickname:   googleUser.Name,
+			Nickname:   sanitizedName,
 			ProfileImg: &googleUser.Picture,
 			Provider:   &provider,
 			ProviderID: &googleUser.ID,
@@ -126,7 +169,18 @@ func (h *AuthHandler) GoogleLogin(c *fiber.Ctx) error {
 		})
 	}
 
-	// HTTP-Only 쿠키로 리프레시 토큰 설정 (보안 강화)
+	// HTTP-Only 쿠키로 액세스 토큰 설정 (XSS 방지)
+	c.Cookie(&fiber.Cookie{
+		Name:     "access_token",
+		Value:    accessToken,
+		Path:     "/",
+		MaxAge:   15 * 60, // 15분 (보안 강화)
+		Secure:   h.secureCookie,
+		HTTPOnly: true,
+		SameSite: "Lax",
+	})
+
+	// HTTP-Only 쿠키로 리프레시 토큰 설정
 	c.Cookie(&fiber.Cookie{
 		Name:     "refresh_token",
 		Value:    refreshToken,
@@ -145,8 +199,7 @@ func (h *AuthHandler) GoogleLogin(c *fiber.Ctx) error {
 			ProfileImg: user.ProfileImg,
 			Provider:   user.Provider,
 		},
-		AccessToken: accessToken,
-		ExpiresIn:   3600, // 1시간
+		ExpiresIn: 900, // 15분
 	})
 }
 
@@ -192,14 +245,34 @@ func (h *AuthHandler) RefreshToken(c *fiber.Ctx) error {
 		})
 	}
 
+	// HTTP-Only 쿠키로 액세스 토큰 설정
+	c.Cookie(&fiber.Cookie{
+		Name:     "access_token",
+		Value:    accessToken,
+		Path:     "/",
+		MaxAge:   15 * 60, // 15분
+		Secure:   h.secureCookie,
+		HTTPOnly: true,
+		SameSite: "Lax",
+	})
+
 	return c.JSON(fiber.Map{
-		"access_token": accessToken,
-		"expires_in":   3600,
+		"expires_in": 900,
 	})
 }
 
 // Logout 로그아웃
 func (h *AuthHandler) Logout(c *fiber.Ctx) error {
+	// 액세스 토큰 쿠키 삭제
+	c.Cookie(&fiber.Cookie{
+		Name:     "access_token",
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		Secure:   h.secureCookie,
+		HTTPOnly: true,
+	})
+
 	// 리프레시 토큰 쿠키 삭제
 	c.Cookie(&fiber.Cookie{
 		Name:     "refresh_token",

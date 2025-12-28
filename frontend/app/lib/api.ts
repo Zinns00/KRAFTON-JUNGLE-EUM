@@ -8,41 +8,12 @@ interface AuthResponse {
     profile_img?: string;
     provider?: string;
   };
-  access_token: string;
   expires_in: number;
 }
 
-interface RefreshResponse {
-  access_token: string;
-  expires_in: number;
-}
-
+// HTTP-only 쿠키 기반 인증 (XSS 방지)
 class ApiClient {
-  private accessToken: string | null = null;
-
-  constructor() {
-    if (typeof window !== 'undefined') {
-      this.accessToken = localStorage.getItem('access_token');
-    }
-  }
-
-  setAccessToken(token: string) {
-    this.accessToken = token;
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('access_token', token);
-    }
-  }
-
-  clearAccessToken() {
-    this.accessToken = null;
-    if (typeof window !== 'undefined') {
-      localStorage.removeItem('access_token');
-    }
-  }
-
-  getAccessToken(): string | null {
-    return this.accessToken;
-  }
+  private isLoggedIn: boolean = false;
 
   private async request<T>(
     endpoint: string,
@@ -53,14 +24,10 @@ class ApiClient {
       ...options.headers,
     };
 
-    if (this.accessToken) {
-      (headers as Record<string, string>)['Authorization'] = `Bearer ${this.accessToken}`;
-    }
-
     const response = await fetch(`${API_BASE_URL}${endpoint}`, {
       ...options,
       headers,
-      credentials: 'include',
+      credentials: 'include', // 쿠키 자동 전송
     });
 
     if (response.status === 401) {
@@ -68,7 +35,6 @@ class ApiClient {
       const refreshed = await this.refreshToken();
       if (refreshed) {
         // 재시도
-        (headers as Record<string, string>)['Authorization'] = `Bearer ${this.accessToken}`;
         const retryResponse = await fetch(`${API_BASE_URL}${endpoint}`, {
           ...options,
           headers,
@@ -79,6 +45,7 @@ class ApiClient {
         }
         return retryResponse.json();
       }
+      this.isLoggedIn = false;
       throw new Error('Authentication required');
     }
 
@@ -95,8 +62,7 @@ class ApiClient {
       method: 'POST',
       body: JSON.stringify({ id_token: idToken }),
     });
-
-    this.setAccessToken(response.access_token);
+    this.isLoggedIn = true;
     return response;
   }
 
@@ -108,15 +74,14 @@ class ApiClient {
       });
 
       if (!response.ok) {
-        this.clearAccessToken();
+        this.isLoggedIn = false;
         return false;
       }
 
-      const data: RefreshResponse = await response.json();
-      this.setAccessToken(data.access_token);
+      this.isLoggedIn = true;
       return true;
     } catch {
-      this.clearAccessToken();
+      this.isLoggedIn = false;
       return false;
     }
   }
@@ -125,7 +90,7 @@ class ApiClient {
     try {
       await this.request('/auth/logout', { method: 'POST' });
     } finally {
-      this.clearAccessToken();
+      this.isLoggedIn = false;
     }
   }
 
@@ -133,8 +98,16 @@ class ApiClient {
     return this.request<AuthResponse['user']>('/auth/me');
   }
 
-  isAuthenticated(): boolean {
-    return !!this.accessToken;
+  // 서버에 인증 상태 확인 (쿠키 기반)
+  async checkAuth(): Promise<boolean> {
+    try {
+      await this.getMe();
+      this.isLoggedIn = true;
+      return true;
+    } catch {
+      this.isLoggedIn = false;
+      return false;
+    }
   }
 }
 

@@ -1,25 +1,34 @@
 package auth
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
 )
 
+// GenerateCSRFToken CSRF 토큰 생성
+func GenerateCSRFToken() string {
+	bytes := make([]byte, 32)
+	rand.Read(bytes)
+	return hex.EncodeToString(bytes)
+}
+
 // AuthMiddleware JWT 인증 미들웨어
 func AuthMiddleware(jwtManager *JWTManager) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		// Authorization 헤더에서 토큰 추출
-		authHeader := c.Get("Authorization")
-		if authHeader == "" {
-			// 쿠키에서 토큰 확인
-			authHeader = c.Cookies("access_token")
+		// 쿠키에서 토큰 우선 확인 (HTTP-only 쿠키 보안)
+		token := c.Cookies("access_token")
+
+		// 쿠키에 없으면 Authorization 헤더 확인 (API 클라이언트용)
+		if token == "" {
+			authHeader := c.Get("Authorization")
 			if authHeader == "" {
 				return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 					"error": "missing authorization token",
 				})
 			}
-		} else {
 			// Bearer 토큰 파싱
 			parts := strings.Split(authHeader, " ")
 			if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
@@ -27,11 +36,11 @@ func AuthMiddleware(jwtManager *JWTManager) fiber.Handler {
 					"error": "invalid authorization header format",
 				})
 			}
-			authHeader = parts[1]
+			token = parts[1]
 		}
 
 		// 토큰 검증
-		claims, err := jwtManager.ValidateAccessToken(authHeader)
+		claims, err := jwtManager.ValidateAccessToken(token)
 		if err != nil {
 			if err == ErrExpiredToken {
 				return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{

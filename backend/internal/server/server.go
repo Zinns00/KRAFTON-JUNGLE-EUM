@@ -10,6 +10,7 @@ import (
 	"github.com/gofiber/contrib/websocket"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
+	"github.com/gofiber/fiber/v2/middleware/limiter"
 	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"gorm.io/gorm"
@@ -98,11 +99,25 @@ func (s *Server) SetupRoutes() {
 		})
 	})
 
+	// Rate Limiter 설정 (인증 엔드포인트용 - Brute Force 방지)
+	authLimiter := limiter.New(limiter.Config{
+		Max:        10,              // 최대 10회
+		Expiration: 1 * time.Minute, // 1분당
+		KeyGenerator: func(c *fiber.Ctx) string {
+			return c.IP() // IP 기반 제한
+		},
+		LimitReached: func(c *fiber.Ctx) error {
+			return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{
+				"error": "too many requests, please try again later",
+			})
+		},
+	})
+
 	// Auth 라우트 그룹
 	authGroup := s.app.Group("/auth")
-	authGroup.Post("/google", s.authHandler.GoogleLogin)
-	authGroup.Post("/refresh", s.authHandler.RefreshToken)
-	authGroup.Post("/logout", s.authHandler.Logout)
+	authGroup.Post("/google", authLimiter, s.authHandler.GoogleLogin)
+	authGroup.Post("/refresh", authLimiter, s.authHandler.RefreshToken)
+	authGroup.Post("/logout", auth.AuthMiddleware(s.jwtManager), s.authHandler.Logout) // 인증된 사용자만
 	authGroup.Get("/me", auth.AuthMiddleware(s.jwtManager), s.authHandler.GetMe)
 
 	// WebSocket 업그레이드 체크 미들웨어
