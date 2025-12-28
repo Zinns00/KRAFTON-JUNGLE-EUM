@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "EUM - Real-time Voice AI",
-  description: "Real-time voice recognition and transcription service",
+  title: "EUM - AI 실시간 통역 협업 플랫폼",
+  description: "실시간 음성 통역과 무한 캔버스를 결합한 글로벌 협업 플랫폼",
 };
 
 export default function RootLayout({

@@ -1,1 +1,0 @@
-export { useVoiceActivity } from "./useVoiceActivity";
