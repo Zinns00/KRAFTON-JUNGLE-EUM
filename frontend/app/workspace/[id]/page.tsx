@@ -10,6 +10,7 @@ import ChatSection from "./components/ChatSection";
 import CallsSection from "./components/CallsSection";
 import CalendarSection from "./components/CalendarSection";
 import StorageSection from "./components/StorageSection";
+import NotificationDropdown from "../../components/NotificationDropdown";
 
 export default function WorkspaceDetailPage() {
   const router = useRouter();
@@ -131,7 +132,20 @@ export default function WorkspaceDetailPage() {
 
           <div className="flex items-center gap-3">
             <button
-              onClick={() => router.push("/workspace")}
+              onClick={async () => {
+                if (confirm("정말로 이 워크스페이스를 나가시겠습니까?")) {
+                  try {
+                    await apiClient.leaveWorkspace(workspace.id);
+                    router.push("/workspace");
+                  } catch (error: unknown) {
+                    if (error instanceof Error && error.message.includes("owner cannot leave")) {
+                      alert("소유자는 워크스페이스를 나갈 수 없습니다. 소유권을 이전하거나 워크스페이스를 삭제하세요.");
+                    } else {
+                      alert("워크스페이스 나가기에 실패했습니다.");
+                    }
+                  }
+                }
+              }}
               className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-red-500 hover:bg-red-50 rounded-lg transition-colors mr-2"
               title="워크스페이스 나가기"
             >
@@ -140,11 +154,7 @@ export default function WorkspaceDetailPage() {
               </svg>
               나가기
             </button>
-            <button className="p-2 rounded-lg hover:bg-black/5 text-black/40 hover:text-black/70 transition-colors">
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
-              </svg>
-            </button>
+            <NotificationDropdown onInvitationAccepted={() => router.push("/workspace")} />
             {user.profileImg ? (
               <img
                 src={user.profileImg}

@@ -134,11 +134,12 @@ func (h *WorkspaceHandler) GetMyWorkspaces(c *fiber.Ctx) error {
 
 	var workspaces []model.Workspace
 
-	// 내가 멤버로 속한 워크스페이스 조회
+	// 내가 ACTIVE 멤버로 속한 워크스페이스 조회
 	err := h.db.
 		Joins("JOIN workspace_members ON workspace_members.workspace_id = workspaces.id").
-		Where("workspace_members.user_id = ?", claims.UserID).
+		Where("workspace_members.user_id = ? AND workspace_members.status = ?", claims.UserID, "ACTIVE").
 		Preload("Owner").
+		Preload("Members", "status = ?", "ACTIVE").
 		Preload("Members.User").
 		Order("workspaces.created_at DESC").
 		Find(&workspaces).Error
@@ -205,7 +206,7 @@ func (h *WorkspaceHandler) GetWorkspace(c *fiber.Ctx) error {
 	return c.JSON(h.toWorkspaceResponse(&workspace))
 }
 
-// AddMembers 멤버 추가
+// AddMembers 멤버 초대 (PENDING 멤버 + 알림 생성)
 func (h *WorkspaceHandler) AddMembers(c *fiber.Ctx) error {
 	claims := c.Locals("claims").(*auth.Claims)
 	workspaceID, err := c.ParamsInt("id")
@@ -235,7 +236,7 @@ func (h *WorkspaceHandler) AddMembers(c *fiber.Ctx) error {
 	// 멤버인지 확인
 	isMember := false
 	for _, member := range workspace.Members {
-		if member.UserID == claims.UserID {
+		if member.UserID == claims.UserID && member.Status == "ACTIVE" {
 			isMember = true
 			break
 		}
@@ -247,14 +248,18 @@ func (h *WorkspaceHandler) AddMembers(c *fiber.Ctx) error {
 		})
 	}
 
-	// 기존 멤버 ID 맵
+	// 기존 멤버 ID 맵 (ACTIVE + PENDING 모두)
 	existingMembers := make(map[int64]bool)
 	for _, member := range workspace.Members {
 		existingMembers[member.UserID] = true
 	}
 
-	// 새 멤버 추가
-	addedCount := 0
+	// 초대자 정보 조회
+	var inviter model.User
+	h.db.First(&inviter, claims.UserID)
+
+	// 초대장 생성
+	invitedCount := 0
 	for _, memberID := range req.MemberIDs {
 		// 이미 멤버인 경우 건너뛰기
 		if existingMembers[memberID] {
@@ -267,18 +272,73 @@ func (h *WorkspaceHandler) AddMembers(c *fiber.Ctx) error {
 			continue
 		}
 
+		// PENDING 상태로 멤버 생성
 		member := model.WorkspaceMember{
 			WorkspaceID: workspace.ID,
 			UserID:      memberID,
+			Status:      "PENDING",
 		}
-		if err := h.db.Create(&member).Error; err == nil {
-			addedCount++
+		if err := h.db.Create(&member).Error; err != nil {
+			continue
 		}
+
+		// 알림 생성
+		if err := CreateWorkspaceInviteNotification(h.db, claims.UserID, memberID, workspace.ID, workspace.Name, inviter.Nickname); err != nil {
+			// 알림 생성 실패해도 초대는 성공으로 처리
+			continue
+		}
+
+		invitedCount++
 	}
 
 	return c.JSON(fiber.Map{
-		"message":     "members added successfully",
-		"added_count": addedCount,
+		"message":       "invitations sent successfully",
+		"invited_count": invitedCount,
+	})
+}
+
+// LeaveWorkspace 워크스페이스 나가기
+func (h *WorkspaceHandler) LeaveWorkspace(c *fiber.Ctx) error {
+	claims := c.Locals("claims").(*auth.Claims)
+	workspaceID, err := c.ParamsInt("id")
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "invalid workspace id",
+		})
+	}
+
+	// 워크스페이스 조회
+	var workspace model.Workspace
+	if err := h.db.First(&workspace, workspaceID).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"error": "workspace not found",
+		})
+	}
+
+	// 소유자는 나갈 수 없음
+	if workspace.OwnerID == claims.UserID {
+		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": "owner cannot leave workspace. Transfer ownership first or delete the workspace.",
+		})
+	}
+
+	// 멤버십 조회
+	var member model.WorkspaceMember
+	if err := h.db.Where("workspace_id = ? AND user_id = ?", workspaceID, claims.UserID).First(&member).Error; err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"error": "you are not a member of this workspace",
+		})
+	}
+
+	// 멤버십 삭제
+	if err := h.db.Delete(&member).Error; err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "failed to leave workspace",
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"message": "successfully left workspace",
 	})
 }
 
