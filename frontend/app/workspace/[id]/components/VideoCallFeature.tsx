@@ -114,18 +114,27 @@ export default function VideoCallFeature({ roomId, roomTitle, onLeave }: VideoCa
 
                 {/* Content Switcher */}
                 {isWhiteboardOpen ? (
-                    <div className="absolute inset-0 z-50 flex overflow-hidden bg-gray-900/95 backdrop-blur-sm animate-in fade-in zoom-in-95 duration-200">
-                        <div className="flex-1 flex flex-col relative h-full rounded-2xl overflow-hidden m-4 bg-white shadow-2xl ring-1 ring-white/10">
-                            <div className="flex-shrink-0 flex items-center justify-between px-4 py-3 bg-gray-100 border-b border-gray-200">
-                                <div className="flex items-center gap-2">
-                                    <span className="text-gray-900 font-bold text-lg">📝 화이트보드</span>
-                                    <span className="text-xs text-gray-500 bg-gray-200 px-2 py-0.5 rounded-full">실시간 저장됨</span>
+                    <div className="absolute inset-0 z-50 flex overflow-hidden bg-gray-900/90 backdrop-blur-sm animate-in fade-in zoom-in-95 duration-200 p-4 gap-4 select-none">
+                        <div className="flex-1 flex flex-col relative rounded-2xl overflow-hidden bg-white shadow-2xl ring-1 ring-black/5">
+                            <div className="flex-shrink-0 flex items-center justify-between px-6 py-4 bg-white border-b border-stone-100">
+                                <div className="flex items-center gap-3">
+                                    <div className="flex items-center gap-2">
+                                        <h2 className="text-lg font-bold text-stone-900 tracking-tight">화이트보드</h2>
+                                    </div>
+                                    <div className="px-2.5 py-0.5 bg-stone-100 rounded-full border border-stone-200/60 shadow-sm">
+                                        <span className="text-[11px] font-semibold text-stone-500">
+                                            {roomTitle || roomId}
+                                        </span>
+                                    </div>
                                 </div>
                                 <button
                                     onClick={() => setIsWhiteboardOpen(false)}
-                                    className="bg-red-500 hover:bg-red-600 text-white px-3 py-1.5 rounded-lg text-sm font-medium transition-colors"
+                                    className="p-2 text-stone-400 hover:text-stone-900 transition-colors"
+                                    title="닫기"
                                 >
-                                    닫기
+                                    <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                    </svg>
                                 </button>
                             </div>
                             <div className="flex-1 relative">
@@ -133,10 +142,8 @@ export default function VideoCallFeature({ roomId, roomTitle, onLeave }: VideoCa
                             </div>
                         </div>
 
-                        <div className="w-80 h-full p-4 pl-0">
-                            <div className="h-full bg-gray-800 rounded-2xl overflow-hidden border border-gray-700">
-                                <ParticipantSidebar />
-                            </div>
+                        <div className="w-80 flex flex-col rounded-2xl overflow-hidden bg-white shadow-2xl border border-stone-100 ring-1 ring-black/5">
+                            <ParticipantSidebar />
                         </div>
                     </div>
                 ) : (

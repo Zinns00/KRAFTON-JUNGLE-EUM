@@ -164,6 +164,14 @@ interface FilesResponse {
   breadcrumbs?: WorkspaceFile[];
 }
 
+// 화이트보드 관련 타입
+interface WhiteboardResponse {
+  success: boolean;
+  history: any[];
+  canUndo: boolean;
+  canRedo: boolean;
+}
+
 // HTTP-only 쿠키 기반 인증 (XSS 방지)
 class ApiClient {
   private isLoggedIn: boolean = false;
@@ -457,6 +465,18 @@ class ApiClient {
     return this.request<{ token: string }>('/api/video/token', {
       method: 'POST',
       body: JSON.stringify({ roomName, participantName }),
+    });
+  }
+
+  // ========== 화이트보드 API ==========
+  async getWhiteboardHistory(roomName: string): Promise<WhiteboardResponse> {
+    return this.request<WhiteboardResponse>(`/api/whiteboard?room=${roomName}`);
+  }
+
+  async handleWhiteboardAction(roomName: string, action: { type?: string; stroke?: any }): Promise<WhiteboardResponse> {
+    return this.request<WhiteboardResponse>('/api/whiteboard', {
+      method: 'POST',
+      body: JSON.stringify({ room: roomName, ...action }),
     });
   }
 

@@ -52,14 +52,14 @@ export default function ParticipantSidebar({ maxVisible = 4 }: ParticipantSideba
     };
 
     return (
-        <div className="flex flex-col h-full w-32 bg-white/80 backdrop-blur-sm border-l border-black/5">
+        <div className="flex flex-col h-full w-full bg-white select-none">
             {/* 위 화살표 */}
             <button
                 onClick={handleUp}
                 disabled={!showUpArrow}
-                className={`flex-shrink-0 h-8 flex items-center justify-center transition-colors ${showUpArrow
-                    ? 'text-stone-600 hover:bg-black/5 cursor-pointer'
-                    : 'text-stone-300 cursor-not-allowed'
+                className={`flex-shrink-0 h-10 flex items-center justify-center transition-colors border-b border-stone-50 ${showUpArrow
+                    ? 'text-stone-600 hover:bg-stone-50 cursor-pointer'
+                    : 'text-stone-200 cursor-not-allowed'
                     }`}
             >
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -67,8 +67,8 @@ export default function ParticipantSidebar({ maxVisible = 4 }: ParticipantSideba
                 </svg>
             </button>
 
-            {/* 李멸???紐⑸줉 */}
-            <div className="flex-1 flex flex-col gap-2 p-2 overflow-hidden">
+            {/* 참가자 목록 */}
+            <div className="flex-1 flex flex-col gap-3 p-4 overflow-hidden bg-stone-50/30">
                 {visibleParticipants.map((participant, index) => {
                     const trackRef = getTrackForParticipant(participant);
                     const isLocal = participant.identity === localParticipant?.identity;
@@ -77,29 +77,31 @@ export default function ParticipantSidebar({ maxVisible = 4 }: ParticipantSideba
                     return (
                         <div
                             key={participant.identity}
-                            className="relative aspect-video bg-stone-100 rounded-lg overflow-hidden ring-1 ring-black/5 shadow-sm"
+                            className="relative aspect-video bg-stone-200 rounded-xl overflow-hidden ring-1 ring-black/5 shadow-sm group"
                         >
-                            {/* 鍮꾨뵒??*/}
+                            {/* 비디오 */}
                             {videoTrack ? (
                                 <VideoRenderer track={videoTrack} />
                             ) : (
                                 <div className="absolute inset-0 flex items-center justify-center bg-stone-100">
-                                    <div className="w-8 h-8 bg-stone-200 rounded-full flex items-center justify-center text-stone-500 text-xs font-bold ring-2 ring-white">
+                                    <div className="w-10 h-10 bg-white rounded-full flex items-center justify-center text-stone-900 border border-stone-200 shadow-sm font-bold">
                                         {participant.identity.charAt(0).toUpperCase()}
                                     </div>
                                 </div>
                             )}
 
-                            {/* ?대쫫 ?쇰꺼 */}
-                            <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/70 to-transparent p-1">
-                                <p className="text-white text-[10px] truncate text-center">
-                                    {isLocal ? '나' : participant.identity}
-                                </p>
+                            {/* 이름 라벨 */}
+                            <div className="absolute bottom-1.5 left-1.5 right-1.5">
+                                <div className="bg-black/40 backdrop-blur-md px-2 py-0.5 rounded-lg border border-white/10">
+                                    <p className="text-white text-[10px] font-medium truncate text-center">
+                                        {isLocal ? '나' : (participant.name || participant.identity)}
+                                    </p>
+                                </div>
                             </div>
 
-                            {/* ?뚯냼嫄??쒖떆 */}
-                            {participant.isMicrophoneEnabled === false && (
-                                <div className="absolute top-1 right-1 bg-red-500/80 rounded-full p-0.5">
+                            {/* 음소거 표시 */}
+                            {!participant.isMicrophoneEnabled && (
+                                <div className="absolute top-2 right-2 bg-red-500 rounded-full p-1 shadow-lg ring-2 ring-white/20">
                                     <svg className="w-2.5 h-2.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
@@ -115,9 +117,9 @@ export default function ParticipantSidebar({ maxVisible = 4 }: ParticipantSideba
             <button
                 onClick={handleDown}
                 disabled={!showDownArrow}
-                className={`flex-shrink-0 h-8 flex items-center justify-center transition-colors ${showDownArrow
-                    ? 'text-stone-600 hover:bg-black/5 cursor-pointer'
-                    : 'text-stone-300 cursor-not-allowed'
+                className={`flex-shrink-0 h-10 flex items-center justify-center transition-colors border-t border-stone-50 ${showDownArrow
+                    ? 'text-stone-600 hover:bg-stone-50 cursor-pointer'
+                    : 'text-stone-200 cursor-not-allowed'
                     }`}
             >
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -126,8 +128,10 @@ export default function ParticipantSidebar({ maxVisible = 4 }: ParticipantSideba
             </button>
 
             {/* 참가자 수 표시 */}
-            <div className="flex-shrink-0 p-2 text-center border-t border-black/5 bg-stone-50/50">
-                <span className="text-stone-500 text-xs font-semibold">{totalParticipants}명</span>
+            <div className="flex-shrink-0 p-4 pt-3 border-t border-stone-100 bg-white">
+                <div className="flex items-center justify-center gap-2 px-3 py-1.5 bg-stone-100 rounded-full border border-stone-200/60 shadow-sm">
+                    <span className="text-stone-600 text-xs font-bold leading-none">{totalParticipants}명 참여 중</span>
+                </div>
             </div>
         </div>
     );

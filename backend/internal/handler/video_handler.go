@@ -7,14 +7,16 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/livekit/protocol/auth"
+	"gorm.io/gorm"
 )
 
 type VideoHandler struct {
 	cfg *config.Config
+	db  *gorm.DB
 }
 
-func NewVideoHandler(cfg *config.Config) *VideoHandler {
-	return &VideoHandler{cfg: cfg}
+func NewVideoHandler(cfg *config.Config, db *gorm.DB) *VideoHandler {
+	return &VideoHandler{cfg: cfg, db: db}
 }
 
 type TokenRequest struct {
@@ -48,6 +50,22 @@ func (h *VideoHandler) GenerateToken(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": "roomName and participantName are required",
 		})
+	}
+
+	// roomName format: meeting-{id} 가 있다면 종료 여부 확인
+	if len(req.RoomName) > 8 && req.RoomName[:8] == "meeting-" {
+		idStr := req.RoomName[8:]
+		var meeting struct {
+			Status string
+		}
+		// model.Meeting 대신 가벼운 구조체 사용 또는 GORM 활용
+		if err := h.db.Table("meetings").Select("status").Where("id = ?", idStr).Scan(&meeting).Error; err == nil {
+			if meeting.Status == "ENDED" {
+				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+					"error": "이미 종료된 통화방입니다.",
+				})
+			}
+		}
 	}
 
 	// Create access token

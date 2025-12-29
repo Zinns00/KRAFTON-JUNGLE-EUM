@@ -298,6 +298,7 @@ input {
   justify-content: center !important;
 
   position: relative !important;
+  top: 0 !important;
   padding: 0 !important;
   margin: 0 !important;
   overflow: visible !important;
@@ -339,7 +340,7 @@ input {
 
   /* Apply requested fine-tuning: x +4, y -2 (5px up from previous) */
   position: static !important;
-  transform: translate(4px, -2px) !important;
+  transform: translate(4px, 4px) !important;
 }
 
 /* EXCEPTION: Menu Items (Maintain rectangular layout) */

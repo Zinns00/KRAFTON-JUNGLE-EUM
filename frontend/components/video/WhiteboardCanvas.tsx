@@ -1,9 +1,10 @@
 ﻿'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import * as PIXI from 'pixi.js';
 import { useRoomContext } from '@livekit/components-react';
 import { RoomEvent } from 'livekit-client';
+import { apiClient } from '@/app/lib/api';
 
 interface DrawEvent {
   type: 'draw';
@@ -68,6 +69,7 @@ export default function WhiteboardCanvas() {
   const smoothnessRef = useRef(3);
 
   const [showToolSettings, setShowToolSettings] = useState(false);
+  const [isToolbarOpen, setIsToolbarOpen] = useState(false);
   const [isInteracting, setIsInteracting] = useState(false);
   const [isMiddlePanning, setIsMiddlePanning] = useState(false);
 
@@ -78,7 +80,7 @@ export default function WhiteboardCanvas() {
   const drawLine = (x: number, y: number, prevX: number, prevY: number, color: number, width: number) => {
     if (!drawingContainerRef.current) return;
 
-    const isEraser = color === 0xffffff && toolRef.current === 'eraser';
+    const isEraser = color === 0xffffff;
 
     let graphics: PIXI.Graphics;
     const sameProp = currentGraphicsRef.current &&
@@ -305,15 +307,10 @@ export default function WhiteboardCanvas() {
 
       if (currentStroke.length > 0) {
         try {
-          const res = await fetch('/api/whiteboard', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ room: room?.name, stroke: currentStroke })
-          });
-          const data = await res.json();
+          const data = await apiClient.handleWhiteboardAction(room.name, { stroke: currentStroke });
           if (data.success) {
-            setCanUndo(data.canUndo ?? true);
-            setCanRedo(data.canRedo ?? false);
+            setCanUndo(data.canUndo);
+            setCanRedo(data.canRedo);
           }
         } catch (err) {
           console.error('Failed to save stroke:', err);
@@ -410,9 +407,7 @@ export default function WhiteboardCanvas() {
     if (!room?.name) return;
     const loadHistory = async () => {
       try {
-        const res = await fetch(`/api/whiteboard?room=${room.name}`);
-        if (!res.ok) return;
-        const data = await res.json();
+        const data = await apiClient.getWhiteboardHistory(room.name);
 
         let history = [];
         if (Array.isArray(data)) { // Backwards compatibility just in case
@@ -451,7 +446,7 @@ export default function WhiteboardCanvas() {
     setActiveTool(t);
   };
 
-  const clearBoard = () => {
+  const clearBoard = useCallback(() => {
     if (drawingContainerRef.current) {
       drawingContainerRef.current.removeChildren();
       currentGraphicsRef.current = null;
@@ -461,28 +456,25 @@ export default function WhiteboardCanvas() {
       const encoder = new TextEncoder();
       room.localParticipant.publishData(encoder.encode(JSON.stringify(event)), { reliable: true });
     }
-    fetch('/api/whiteboard', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ room: room?.name, type: 'clear' })
-    }).then(res => res.json()).then(data => {
-      setCanUndo(false);
-      setCanRedo(false);
-    });
-  };
+    apiClient.handleWhiteboardAction(room.name, { type: 'clear' })
+      .then(data => {
+        setCanUndo(false);
+        setCanRedo(false);
+      })
+      .catch(err => console.error('Failed to clear board:', err));
+  }, [room]);
 
-  const performUndo = async () => {
+  const performUndo = useCallback(async () => {
     if (!room?.name || !canUndo) return; // Prevent if disabled
 
-    const res = await fetch('/api/whiteboard', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ room: room.name, type: 'undo' })
-    });
-    const data = await res.json();
-    if (data.success) {
-      setCanUndo(data.canUndo);
-      setCanRedo(data.canRedo);
+    try {
+      const data = await apiClient.handleWhiteboardAction(room.name, { type: 'undo' });
+      if (data.success) {
+        setCanUndo(data.canUndo);
+        setCanRedo(data.canRedo);
+      }
+    } catch (err) {
+      console.error('Undo failed:', err);
     }
 
     const event: RefetchEvent = { type: 'refetch' };
@@ -491,20 +483,19 @@ export default function WhiteboardCanvas() {
       room.localParticipant.publishData(encoder.encode(JSON.stringify(event)), { reliable: true });
     }
     setTriggerLoad(prev => prev + 1);
-  };
+  }, [room, canUndo]);
 
-  const performRedo = async () => {
+  const performRedo = useCallback(async () => {
     if (!room?.name || !canRedo) return; // Prevent if disabled
 
-    const res = await fetch('/api/whiteboard', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ room: room.name, type: 'redo' })
-    });
-    const data = await res.json();
-    if (data.success) {
-      setCanUndo(data.canUndo);
-      setCanRedo(data.canRedo);
+    try {
+      const data = await apiClient.handleWhiteboardAction(room.name, { type: 'redo' });
+      if (data.success) {
+        setCanUndo(data.canUndo);
+        setCanRedo(data.canRedo);
+      }
+    } catch (err) {
+      console.error('Redo failed:', err);
     }
 
     const event: RefetchEvent = { type: 'refetch' };
@@ -513,10 +504,10 @@ export default function WhiteboardCanvas() {
       room.localParticipant.publishData(encoder.encode(JSON.stringify(event)), { reliable: true });
     }
     setTriggerLoad(prev => prev + 1);
-  };
+  }, [room, canRedo]);
 
   // Move zoom logic out so buttons can use it
-  const zoom = (factor: number, centerX?: number, centerY?: number) => {
+  const zoom = useCallback((factor: number, centerX?: number, centerY?: number) => {
     const oldScale = scaleRef.current;
     const newScale = Math.min(Math.max(0.1, oldScale + factor), 5);
 
@@ -554,9 +545,9 @@ export default function WhiteboardCanvas() {
       drawingContainerRef.current.position.set(newPanX, newPanY);
       drawingContainerRef.current.scale.set(newScale);
     }
-  };
+  }, []);
 
-  const resetZoom = () => {
+  const resetZoom = useCallback(() => {
     setScale(1);
     scaleRef.current = 1;
     if (drawingContainerRef.current) {
@@ -567,12 +558,12 @@ export default function WhiteboardCanvas() {
     if (drawingContainerRef.current) {
       drawingContainerRef.current.position.set(0, 0);
     }
-  };
+  }, []);
 
-  const handleColorChange = (hex: string) => {
+  const handleColorChange = useCallback((hex: string) => {
     setPenColor(hex);
     penColorRef.current = parseInt(hex.replace('#', ''), 16);
-  };
+  }, []);
 
   const getCursor = () => {
     if (isMiddlePanning) return 'grabbing';
@@ -644,49 +635,48 @@ export default function WhiteboardCanvas() {
       <div
         className="absolute inset-0 z-0 pointer-events-none opacity-50 state-layer"
         style={{
-          backgroundImage: 'radial-gradient(#999999 1.5px, transparent 1.5px)',
+          backgroundImage: 'radial-gradient(#999999 1.5px, transparent 1.5px)', // Reverted to original gray
           backgroundSize: `${24 * scale}px ${24 * scale}px`,
           backgroundPosition: `${panOffset.x}px ${panOffset.y}px`
         }}
       />
 
       {/* Top Left Controls: Zoom & Reset */}
-      <div className="absolute top-4 left-4 flex items-center gap-2 z-40">
-        <div className="flex bg-white/80 backdrop-blur rounded-lg shadow-sm border border-gray-100 overflow-hidden">
-
+      <div className="absolute top-6 left-6 flex items-center gap-2 z-40">
+        <div className="flex bg-white backdrop-blur-md rounded-2xl shadow-[0_4px_20px_rgba(0,0,0,0.08)] border border-stone-200/60 overflow-hidden">
           {/* Zoom Out (-) */}
           <button
             onClick={() => zoom(-0.2)}
             disabled={scale <= 0.1}
-            className={`w-8 h-8 flex items-center justify-center hover:bg-white text-gray-600 transition-all ${scale <= 0.1 ? 'opacity-[0.65] cursor-not-allowed' : 'hover:text-black'}`}
+            className={`w-10 h-10 flex items-center justify-center hover:bg-stone-50 text-stone-500 transition-all ${scale <= 0.1 ? 'opacity-[0.3] cursor-not-allowed' : 'hover:text-stone-900'}`}
             title="축소 (Ctrl -)"
           >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 12H4" />
             </svg>
           </button>
 
-          <div className="w-px bg-gray-200 h-8"></div>
+          <div className="w-px bg-stone-200/60 h-10"></div>
 
           {/* Reset (100%) */}
           <button
             onClick={resetZoom}
-            className="px-3 h-8 text-sm font-medium text-gray-500 hover:bg-white hover:text-black transition-colors"
+            className="px-4 h-10 text-sm font-semibold text-stone-600 hover:bg-stone-50 hover:text-stone-900 transition-colors"
             title="100%로 초기화 (Ctrl 0)"
           >
             {Math.round(scale * 100)}%
           </button>
 
-          <div className="w-px bg-gray-200 h-8"></div>
+          <div className="w-px bg-stone-200/60 h-10"></div>
 
           {/* Zoom In (+) */}
           <button
             onClick={() => zoom(0.2)}
             disabled={scale >= 5}
-            className={`w-8 h-8 flex items-center justify-center hover:bg-white text-gray-600 transition-all ${scale >= 5 ? 'opacity-[0.65] cursor-not-allowed' : 'hover:text-black'}`}
+            className={`w-10 h-10 flex items-center justify-center hover:bg-stone-50 text-stone-500 transition-all ${scale >= 5 ? 'opacity-[0.3] cursor-not-allowed' : 'hover:text-stone-900'}`}
             title="확대 (Ctrl +)"
           >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
             </svg>
           </button>
@@ -695,203 +685,228 @@ export default function WhiteboardCanvas() {
 
       <div ref={containerRef} className="w-full h-full relative z-10" />
 
-      {/* Floating Toolbar */}
-      <div className={`absolute bottom-6 left-1/2 transform -translate-x-1/2 flex flex-col items-center gap-2 z-50 transition-opacity duration-300 ${isInteracting ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
+      {/* Floating Toolbar Container */}
+      <div className={`absolute bottom-0 left-1/2 -translate-x-1/2 flex flex-col items-center z-50 transition-all duration-500 ease-in-out ${isToolbarOpen ? 'translate-y-[-20px]' : 'translate-y-[calc(100%-32px)]'}`}>
 
-        {/* Tool Settings Popup */}
-        {showToolSettings && (
-          <div className="bg-white rounded-xl shadow-xl p-4 border border-gray-100 flex flex-col gap-4 animate-in fade-in slide-in-from-bottom-2 mb-2 w-72 max-h-[60vh] overflow-y-auto">
-            {/* Size */}
-            <div className="flex items-center gap-3">
-              <span className="text-xs font-medium text-gray-500 w-12">
-                Size {activeTool === 'pen' ? penSize : eraserSize}px
-              </span>
-              <input
-                type="range"
-                min={activeTool === 'pen' ? "1" : "5"}
-                max={activeTool === 'pen' ? "20" : "50"}
-                value={activeTool === 'pen' ? penSize : eraserSize}
-                onChange={(e) => {
-                  const val = parseInt(e.target.value);
-                  if (activeTool === 'pen') {
-                    setPenSize(val);
-                    penSizeRef.current = val;
-                  } else {
-                    setEraserSize(val);
-                    eraserSizeRef.current = val;
-                  }
-                }}
-                className="flex-1 accent-purple-600 h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer"
-              />
-            </div>
+        {/* Toggle Button */}
+        <button
+          onClick={() => setIsToolbarOpen(!isToolbarOpen)}
+          className="w-14 h-10 flex items-center justify-center bg-white shadow-[0_-4px_12px_rgba(0,0,0,0.05)] rounded-t-2xl border border-stone-200 border-b-0 text-stone-400 hover:text-stone-900 transition-all bg-white/90 backdrop-blur-md group"
+          title={isToolbarOpen ? "툴바 닫기" : "툴바 열기"}
+        >
+          <svg className={`w-6 h-6 transform transition-transform duration-500 ${isToolbarOpen ? 'rotate-180' : ''} group-hover:scale-110`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+          </svg>
+        </button>
 
-            {/* Smooth */}
-            {activeTool === 'pen' && (
+        {/* Toolbar & Settings Panel */}
+        <div className="flex flex-col items-center gap-3 p-4 pt-0 bg-transparent">
+          {/* Tool Settings Popup */}
+          {showToolSettings && (
+            <div className="bg-white rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] p-5 border border-stone-100 flex flex-col gap-4 animate-in fade-in slide-in-from-bottom-2 mb-3 w-72 max-h-[60vh] overflow-y-auto ring-1 ring-black/5">
+              {/* Size */}
               <div className="flex items-center gap-3">
-                <span className="text-xs font-medium text-gray-500 w-12">
-                  Smooth {smoothness}
+                <span className="text-xs font-bold text-stone-500 w-12 uppercase tracking-tight">
+                  크기
                 </span>
-                <input
-                  type="range"
-                  min="0"
-                  max="10"
-                  value={smoothness}
-                  onChange={(e) => {
-                    const val = parseInt(e.target.value);
-                    setSmoothness(val);
-                    smoothnessRef.current = val;
-                  }}
-                  className="flex-1 accent-indigo-500 h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                <div className="flex-1 flex items-center gap-3">
+                  <input
+                    type="range"
+                    min={activeTool === 'pen' ? "1" : "5"}
+                    max={activeTool === 'pen' ? "20" : "100"}
+                    value={activeTool === 'pen' ? penSize : eraserSize}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value);
+                      if (activeTool === 'pen') {
+                        setPenSize(val);
+                        penSizeRef.current = val;
+                      } else {
+                        setEraserSize(val);
+                        eraserSizeRef.current = val;
+                      }
+                    }}
+                    className="flex-1 accent-stone-900 h-1.5 bg-stone-100 rounded-lg appearance-none cursor-pointer"
+                  />
+                  <span className="text-xs font-bold text-stone-900 w-8 text-right">
+                    {activeTool === 'pen' ? penSize : eraserSize}
+                  </span>
+                </div>
+              </div>
+
+              {/* Smooth */}
+              {activeTool === 'pen' && (
+                <div className="flex items-center gap-3">
+                  <span className="text-xs font-bold text-stone-500 w-12 uppercase tracking-tight">
+                    부드럽게
+                  </span>
+                  <div className="flex-1 flex items-center gap-3">
+                    <input
+                      type="range"
+                      min="0"
+                      max="10"
+                      value={smoothness}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value);
+                        setSmoothness(val);
+                        smoothnessRef.current = val;
+                      }}
+                      className="flex-1 accent-stone-900 h-1.5 bg-stone-100 rounded-lg appearance-none cursor-pointer"
+                    />
+                    <span className="text-xs font-bold text-stone-900 w-8 text-right">
+                      {smoothness}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {/* Color */}
+              {activeTool === 'pen' && (
+                <>
+                  <div className="grid grid-cols-7 gap-1.5 pt-4 border-t border-stone-100">
+                    {COLORS.map((c) => (
+                      <button
+                        key={c}
+                        onClick={() => handleColorChange(c)}
+                        className={`w-7 h-7 rounded-full border transition-transform hover:scale-110 ${penColor === c ? 'ring-2 ring-offset-2 ring-stone-900 border-transparent' : 'border-stone-200'}`}
+                        style={{ backgroundColor: c }}
+                        title={c}
+                      />
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-2 pt-2 border-t border-stone-100">
+                    <div
+                      className="w-10 h-10 rounded-xl border border-stone-200 shadow-sm"
+                      style={{ backgroundColor: penColor }}
+                    />
+                    <div className="flex-1 flex items-center bg-stone-50 rounded-xl px-3 border border-stone-200 h-10">
+                      <span className="text-stone-400 font-medium mr-1">#</span>
+                      <input
+                        type="text"
+                        value={penColor.replace('#', '')}
+                        onChange={(e) => {
+                          const val = e.target.value.replace(/[^0-9A-Fa-f]/g, '').slice(0, 6);
+                          handleColorChange(`#${val}`);
+                        }}
+                        className="w-full bg-transparent border-none text-sm font-bold text-stone-900 focus:ring-0 uppercase p-0"
+                        placeholder="000000"
+                      />
+                    </div>
+                    <div className="relative">
+                      <input
+                        type="color"
+                        value={penColor}
+                        onChange={(e) => handleColorChange(e.target.value)}
+                        className="w-10 h-10 opacity-0 absolute inset-0 cursor-pointer"
+                      />
+                      <button className="w-10 h-10 flex items-center justify-center bg-stone-100 rounded-xl hover:bg-stone-200 text-stone-600 transition-colors">
+                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.384-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Toolbar */}
+          <div className="bg-white backdrop-blur-md shadow-[0_12px_40px_rgba(0,0,0,0.15)] rounded-2xl px-3 py-2.5 flex items-center gap-1.5 border border-stone-200/60 ring-1 ring-black/5">
+            {/* Undo */}
+            <button
+              onClick={performUndo}
+              disabled={!canUndo}
+              className={`p-3 rounded-2xl transition-all ${!canUndo ? 'opacity-[0.2] cursor-not-allowed' : 'hover:bg-stone-100 text-stone-600 hover:text-stone-900'}`}
+              title="실행 취소 (Ctrl+Z)"
+            >
+              <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
+              </svg>
+            </button>
+
+            {/* Redo */}
+            <button
+              onClick={performRedo}
+              disabled={!canRedo}
+              className={`p-3 rounded-2xl transition-all ${!canRedo ? 'opacity-[0.2] cursor-not-allowed' : 'hover:bg-stone-100 text-stone-600 hover:text-stone-900'}`}
+              title="다시 실행 (Ctrl+Y)"
+            >
+              <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 10h-10a8 8 0 00-8 8v2M21 10l-6 6m6-6l-6-6" />
+              </svg>
+            </button>
+
+            <div className="w-px h-8 bg-stone-200/60 mx-1.5" />
+
+            {/* Hand */}
+            <button
+              onClick={() => { setTool('hand'); }}
+              className={`p-3 rounded-2xl transition-all ${activeTool === 'hand' ? 'bg-stone-900 text-white shadow-lg' : 'hover:bg-stone-100 text-stone-500 hover:text-stone-900'}`}
+              title="이동"
+            >
+              <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 11.5V14m0-2.5v-6a1.5 1.5 0 113 0m-3 6a1.5 1.5 0 00-3 0v2a7.5 7.5 0 0015 0v-5a1.5 1.5 0 00-3 0m-6-3V11m0-5.5v-1a1.5 1.5 0 013 0v1m0 0V11m0-5.5a1.5 1.5 0 013 0v3m0 0V11" />
+              </svg>
+            </button>
+
+            <div className="w-px h-8 bg-stone-200/60 mx-1.5" />
+
+            {/* Pen */}
+            <button
+              onClick={() => {
+                if (activeTool === 'pen') {
+                  setShowToolSettings(!showToolSettings);
+                } else {
+                  setTool('pen');
+                  setShowToolSettings(true);
+                }
+              }}
+              className={`p-3 rounded-2xl transition-all ${activeTool === 'pen' ? 'bg-stone-900 text-white shadow-lg' : 'hover:bg-stone-100 text-stone-500 hover:text-stone-900'}`}
+              title="펜"
+            >
+              <div className="relative">
+                <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                </svg>
+                <div
+                  className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-white"
+                  style={{ backgroundColor: penColor }}
                 />
               </div>
-            )}
+            </button>
 
-            {/* Color */}
-            {activeTool === 'pen' && (
-              <>
-                <div className="grid grid-cols-7 gap-1.5 pt-2 border-t border-gray-100">
-                  {COLORS.map((c) => (
-                    <button
-                      key={c}
-                      onClick={() => handleColorChange(c)}
-                      className={`w-7 h-7 rounded-full border transition-transform hover:scale-110 ${penColor === c ? 'ring-2 ring-offset-1 ring-purple-600 border-transparent' : 'border-gray-200'}`}
-                      style={{ backgroundColor: c }}
-                      title={c}
-                    />
-                  ))}
-                </div>
-                <div className="flex items-center gap-2 pt-2 border-t border-gray-100">
-                  <div
-                    className="w-8 h-8 rounded-lg border border-gray-200 shadow-sm"
-                    style={{ backgroundColor: penColor }}
-                  />
-                  <div className="flex-1 flex items-center bg-gray-50 rounded-lg px-2 border border-gray-200">
-                    <input
-                      type="text"
-                      value={penColor.replace('#', '')}
-                      onChange={(e) => {
-                        const val = e.target.value.replace(/[^0-9A-Fa-f]/g, '').slice(0, 6);
-                        handleColorChange(`#${val}`);
-                      }}
-                      className="w-full bg-transparent border-none text-sm font-medium text-gray-700 focus:ring-0 uppercase p-1.5"
-                      placeholder="000000"
-                    />
-                  </div>
-                  <div className="relative">
-                    <input
-                      type="color"
-                      value={penColor}
-                      onChange={(e) => handleColorChange(e.target.value)}
-                      className="w-8 h-8 opacity-0 absolute inset-0 cursor-pointer"
-                    />
-                    <button className="w-8 h-8 flex items-center justify-center bg-gray-100 rounded-lg hover:bg-gray-200 text-gray-500">
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.384-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
-                      </svg>
-                    </button>
-                  </div>
-                </div>
-              </>
-            )}
-          </div>
-        )}
-
-        {/* Toolbar */}
-        <div className="bg-white shadow-[0_8px_30px_rgb(0,0,0,0.12)] rounded-2xl px-2 py-2 flex items-center gap-1 border border-gray-100">
-          {/* Undo */}
-          <button
-            onClick={performUndo}
-            disabled={!canUndo}
-            className={`p-3 rounded-xl transition-all ${!canUndo ? 'opacity-[0.65] cursor-not-allowed' : 'hover:bg-gray-100 text-gray-500'}`}
-            title="실행 취소 (Ctrl+Z)"
-          >
-            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
-            </svg>
-          </button>
-
-          {/* Redo */}
-          <button
-            onClick={performRedo}
-            disabled={!canRedo}
-            className={`p-3 rounded-xl transition-all ${!canRedo ? 'opacity-[0.65] cursor-not-allowed' : 'hover:bg-gray-100 text-gray-500'}`}
-            title="다시 실행 (Ctrl+Y)"
-          >
-            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 10h-10a8 8 0 00-8 8v2M21 10l-6 6m6-6l-6-6" />
-            </svg>
-          </button>
-
-          <div className="w-px h-8 bg-gray-200 mx-1" />
-
-          {/* Hand */}
-          <button
-            onClick={() => { setTool('hand'); }}
-            className={`p-3 rounded-xl transition-all ${activeTool === 'hand' ? 'bg-purple-100 text-purple-600' : 'hover:bg-gray-100 text-gray-500'}`}
-            title="이동"
-          >
-            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 11.5V14m0-2.5v-6a1.5 1.5 0 113 0m-3 6a1.5 1.5 0 00-3 0v2a7.5 7.5 0 0015 0v-5a1.5 1.5 0 00-3 0m-6-3V11m0-5.5v-1a1.5 1.5 0 013 0v1m0 0V11m0-5.5a1.5 1.5 0 013 0v3m0 0V11" />
-            </svg>
-          </button>
-
-          <div className="w-px h-8 bg-gray-200 mx-1" />
-
-          {/* Pen */}
-          <button
-            onClick={() => {
-              if (activeTool === 'pen') {
-                setShowToolSettings(!showToolSettings);
-              } else {
-                setTool('pen');
-                setShowToolSettings(true);
-              }
-            }}
-            className={`p-3 rounded-xl transition-all ${activeTool === 'pen' ? 'bg-purple-100 text-purple-600 ring-2 ring-purple-100 ring-offset-1' : 'hover:bg-gray-100 text-gray-500'}`}
-            title="펜"
-          >
-            <div className="relative">
+            {/* Eraser */}
+            <button
+              onClick={() => {
+                if (activeTool === 'eraser') {
+                  setShowToolSettings(!showToolSettings);
+                } else {
+                  setTool('eraser');
+                  setShowToolSettings(true);
+                }
+              }}
+              className={`p-3 rounded-2xl transition-all ${activeTool === 'eraser' ? 'bg-stone-900 text-white shadow-lg' : 'hover:bg-stone-100 text-stone-500 hover:text-stone-900'}`}
+              title="지우개"
+            >
               <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 8l-6 6" />
               </svg>
-              <div
-                className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border border-white"
-                style={{ backgroundColor: penColor }}
-              />
-            </div>
-          </button>
+            </button>
 
-          {/* Eraser */}
-          <button
-            onClick={() => {
-              if (activeTool === 'eraser') {
-                setShowToolSettings(!showToolSettings);
-              } else {
-                setTool('eraser');
-                setShowToolSettings(true);
-              }
-            }}
-            className={`p-3 rounded-xl transition-all ${activeTool === 'eraser' ? 'bg-red-100 text-red-600' : 'hover:bg-gray-100 text-gray-500'}`}
-            title="지우개"
-          >
-            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 8l-6 6" />
-            </svg>
-          </button>
+            <div className="w-px h-8 bg-stone-200/60 mx-1.5" />
 
-          <div className="w-px h-8 bg-gray-200 mx-1" />
-
-          {/* Clear */}
-          <button
-            onClick={clearBoard}
-            className="p-3 hover:bg-red-50 text-red-500 rounded-xl transition-colors font-medium"
-            title="모두 지우기"
-          >
-            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-            </svg>
-          </button>
+            {/* Clear */}
+            <button
+              onClick={clearBoard}
+              className="p-3 hover:bg-red-50 text-red-500 rounded-2xl transition-all group"
+              title="모두 지우기"
+            >
+              <svg className="w-6 h-6 transform group-hover:scale-110 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+            </button>
+          </div>
         </div>
       </div>
     </div>

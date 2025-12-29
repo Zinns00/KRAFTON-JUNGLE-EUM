@@ -29,13 +29,21 @@ export default function CallsSection({ workspaceId, channelId }: CallsSectionPro
         const meetingId = parseInt(channelId.replace("call-", ""));
         const meeting = response.meetings.find((m) => m.id === meetingId);
         if (meeting) setSelectedMeeting(meeting);
+      } else if (selectedMeeting) {
+        // 현재 선택된 미팅이 존재하면, 최신 정보로 업데이트 하되 종료된 경우 해제
+        const updated = response.meetings.find(m => m.id === selectedMeeting.id);
+        if (!updated || updated.status === "ENDED") {
+          setSelectedMeeting(null);
+        } else {
+          setSelectedMeeting(updated);
+        }
       }
     } catch (error) {
       console.error("Failed to load meetings:", error);
     } finally {
       setIsLoading(false);
     }
-  }, [workspaceId, channelId]);
+  }, [workspaceId, channelId, selectedMeeting?.id]); // selectedMeeting.id 의존성 추가
 
   useEffect(() => {
     loadMeetings();
@@ -74,6 +82,7 @@ export default function CallsSection({ workspaceId, channelId }: CallsSectionPro
   const handleEndMeeting = async (meeting: Meeting) => {
     try {
       await apiClient.endMeeting(workspaceId, meeting.id);
+      setSelectedMeeting(null);
       await loadMeetings();
     } catch (error) {
       console.error("Failed to end meeting:", error);
