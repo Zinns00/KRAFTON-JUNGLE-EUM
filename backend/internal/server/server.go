@@ -35,10 +35,8 @@ type Server struct {
 	chatWSHandler       *handler.ChatWSHandler
 	meetingHandler      *handler.MeetingHandler
 	calendarHandler     *handler.CalendarHandler
-	storageHandler      *handler.StorageHandler
-	videoHandler        *handler.VideoHandler
-	whiteboardHandler   *handler.WhiteboardHandler
-	jwtManager          *auth.JWTManager
+	storageHandler *handler.StorageHandler
+	jwtManager     *auth.JWTManager
 }
 
 // New 새 서버 인스턴스 생성
@@ -73,7 +71,6 @@ func New(cfg *config.Config, db *gorm.DB) *Server {
 	chatWSHandler := handler.NewChatWSHandler(db)
 	meetingHandler := handler.NewMeetingHandler(db)
 	calendarHandler := handler.NewCalendarHandler(db)
-	notificationHandler := handler.NewNotificationHandler(db)
 
 	// S3 서비스 초기화 (선택적)
 	var s3Service *storage.S3Service
@@ -102,11 +99,9 @@ func New(cfg *config.Config, db *gorm.DB) *Server {
 		chatHandler:         chatHandler,
 		chatWSHandler:       chatWSHandler,
 		meetingHandler:      meetingHandler,
-		calendarHandler:     calendarHandler,
-		storageHandler:      storageHandler,
-		videoHandler:        handler.NewVideoHandler(cfg, db),
-		whiteboardHandler:   handler.NewWhiteboardHandler(db),
-		jwtManager:          jwtManager,
+		calendarHandler: calendarHandler,
+		storageHandler:  storageHandler,
+		jwtManager:      jwtManager,
 	}
 }
 
@@ -173,6 +168,7 @@ func (s *Server) SetupRoutes() {
 	notificationGroup.Get("/", s.notificationHandler.GetMyNotifications)
 	notificationGroup.Post("/:id/accept", s.notificationHandler.AcceptInvitation)
 	notificationGroup.Post("/:id/decline", s.notificationHandler.DeclineInvitation)
+	notificationGroup.Post("/:id/read", s.notificationHandler.MarkAsRead)
 
 	// Workspace 라우트 그룹 (인증 필요)
 	workspaceGroup := s.app.Group("/api/workspaces", auth.AuthMiddleware(s.jwtManager))
@@ -181,13 +177,6 @@ func (s *Server) SetupRoutes() {
 	workspaceGroup.Get("/:id", s.workspaceHandler.GetWorkspace)
 	workspaceGroup.Post("/:id/members", s.workspaceHandler.AddMembers)
 	workspaceGroup.Delete("/:id/leave", s.workspaceHandler.LeaveWorkspace)
-
-	// Notification 라우트 그룹 (인증 필요)
-	notificationGroup := s.app.Group("/api/notifications", auth.AuthMiddleware(s.jwtManager))
-	notificationGroup.Get("", s.notificationHandler.GetMyNotifications)
-	notificationGroup.Post("/:id/accept", s.notificationHandler.AcceptInvitation)
-	notificationGroup.Post("/:id/decline", s.notificationHandler.DeclineInvitation)
-	notificationGroup.Post("/:id/read", s.notificationHandler.MarkAsRead)
 
 	// Chat 라우트 (워크스페이스 하위)
 	workspaceGroup.Get("/:workspaceId/chats", s.chatHandler.GetWorkspaceChats)
