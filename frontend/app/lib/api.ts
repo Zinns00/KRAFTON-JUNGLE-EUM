@@ -168,8 +168,11 @@ interface FilesResponse {
 // 알림 관련 타입
 interface Notification {
   id: number;
+  user_id?: number;
   type: string;
   content: string;
+  workspace_id?: number;
+  sender_id?: number;
   is_read: boolean;
   related_type?: string;
   related_id?: number;
@@ -180,6 +183,14 @@ interface Notification {
 interface NotificationsResponse {
   notifications: Notification[];
   total: number;
+}
+
+// 화이트보드 관련 타입
+interface WhiteboardResponse {
+  success: boolean;
+  history: any[];
+  canUndo: boolean;
+  canRedo: boolean;
 }
 
 // HTTP-only 쿠키 기반 인증 (XSS 방지)
@@ -512,6 +523,26 @@ class ApiClient {
   async markNotificationAsRead(notificationId: number): Promise<{ message: string }> {
     return this.request(`/api/notifications/${notificationId}/read`, {
       method: 'POST',
+    });
+  }
+
+  // ========== 비디오 통화 API ==========
+  async getVideoToken(roomName: string, participantName?: string): Promise<{ token: string }> {
+    return this.request<{ token: string }>('/api/video/token', {
+      method: 'POST',
+      body: JSON.stringify({ roomName, participantName }),
+    });
+  }
+
+  // ========== 화이트보드 API ==========
+  async getWhiteboardHistory(roomName: string): Promise<WhiteboardResponse> {
+    return this.request<WhiteboardResponse>(`/api/whiteboard?room=${roomName}`);
+  }
+
+  async handleWhiteboardAction(roomName: string, action: { type?: string; stroke?: any }): Promise<WhiteboardResponse> {
+    return this.request<WhiteboardResponse>('/api/whiteboard', {
+      method: 'POST',
+      body: JSON.stringify({ room: roomName, ...action }),
     });
   }
 }
