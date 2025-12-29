@@ -98,12 +98,10 @@ func ConnectDB() (*gorm.DB, error) {
 		&model.CalendarEvent{},
 		&model.EventAttendee{},
 		&model.WorkspaceFile{},
+		&model.Notification{},
 	); err != nil {
 		log.Printf("⚠️ AutoMigrate warning: %v", err)
 	}
-
-	// Manually ensure redo_data column exists (GORM AutoMigrate sometimes fails to add new columns to existing JSONB tables)
-	db.Exec("ALTER TABLE whiteboards ADD COLUMN IF NOT EXISTS redo_data jsonb")
 
 	return db, nil
 }

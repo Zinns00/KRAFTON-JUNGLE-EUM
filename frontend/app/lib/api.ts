@@ -28,6 +28,7 @@ interface WorkspaceMember {
   id: number;
   user_id: number;
   role_id?: number;
+  status?: string; // PENDING, ACTIVE, LEFT
   joined_at: string;
   user?: UserSearchResult;
 }
@@ -59,32 +60,11 @@ interface ChatMessage {
   message: string;
   type: string;
   created_at: string;
-  updated_at?: string;
   sender?: UserSearchResult;
 }
 
 interface ChatsResponse {
   meeting_id: number;
-  messages: ChatMessage[];
-  total: number;
-}
-
-// 채팅방 관련 타입
-interface ChatRoom {
-  id: number;
-  workspace_id: number;
-  title: string;
-  created_at: string;
-  message_count: number;
-}
-
-interface ChatRoomsResponse {
-  chatrooms: ChatRoom[];
-  total: number;
-}
-
-interface ChatRoomMessagesResponse {
-  room_id: number;
   messages: ChatMessage[];
   total: number;
 }
@@ -185,12 +165,21 @@ interface FilesResponse {
   breadcrumbs?: WorkspaceFile[];
 }
 
-// 화이트보드 관련 타입
-interface WhiteboardResponse {
-  success: boolean;
-  history: any[];
-  canUndo: boolean;
-  canRedo: boolean;
+// 알림 관련 타입
+interface Notification {
+  id: number;
+  type: string;
+  content: string;
+  is_read: boolean;
+  related_type?: string;
+  related_id?: number;
+  created_at: string;
+  sender?: UserSearchResult;
+}
+
+interface NotificationsResponse {
+  notifications: Notification[];
+  total: number;
 }
 
 // HTTP-only 쿠키 기반 인증 (XSS 방지)
@@ -328,6 +317,13 @@ class ApiClient {
     });
   }
 
+  // 워크스페이스 나가기
+  async leaveWorkspace(workspaceId: number): Promise<{ message: string }> {
+    return this.request(`/api/workspaces/${workspaceId}/leave`, {
+      method: 'DELETE',
+    });
+  }
+
   // ========== 채팅 API ==========
   async getWorkspaceChats(workspaceId: number, limit = 50, offset = 0): Promise<ChatsResponse> {
     return this.request<ChatsResponse>(
@@ -339,37 +335,6 @@ class ApiClient {
     return this.request<ChatMessage>(`/api/workspaces/${workspaceId}/chats`, {
       method: 'POST',
       body: JSON.stringify({ message, type }),
-    });
-  }
-
-  // ========== 채팅방 API ==========
-  async getChatRooms(workspaceId: number): Promise<ChatRoomsResponse> {
-    return this.request<ChatRoomsResponse>(`/api/workspaces/${workspaceId}/chatrooms`);
-  }
-
-  async createChatRoom(workspaceId: number, title: string): Promise<ChatRoom> {
-    return this.request<ChatRoom>(`/api/workspaces/${workspaceId}/chatrooms`, {
-      method: 'POST',
-      body: JSON.stringify({ title }),
-    });
-  }
-
-  async getChatRoomMessages(workspaceId: number, roomId: number, limit = 50, offset = 0): Promise<ChatRoomMessagesResponse> {
-    return this.request<ChatRoomMessagesResponse>(
-      `/api/workspaces/${workspaceId}/chatrooms/${roomId}/messages?limit=${limit}&offset=${offset}`
-    );
-  }
-
-  async sendChatRoomMessage(workspaceId: number, roomId: number, message: string, type = 'TEXT'): Promise<ChatMessage> {
-    return this.request<ChatMessage>(`/api/workspaces/${workspaceId}/chatrooms/${roomId}/messages`, {
-      method: 'POST',
-      body: JSON.stringify({ message, type }),
-    });
-  }
-
-  async deleteChatRoom(workspaceId: number, roomId: number): Promise<{ message: string }> {
-    return this.request(`/api/workspaces/${workspaceId}/chatrooms/${roomId}`, {
-      method: 'DELETE',
     });
   }
 
@@ -512,26 +477,6 @@ class ApiClient {
     return this.request(`/api/workspaces/${workspaceId}/files/${fileId}/download`);
   }
 
-  // ========== 비디오 통화 API ==========
-  async getVideoToken(roomName: string, participantName?: string): Promise<{ token: string }> {
-    return this.request<{ token: string }>('/api/video/token', {
-      method: 'POST',
-      body: JSON.stringify({ roomName, participantName }),
-    });
-  }
-
-  // ========== 화이트보드 API ==========
-  async getWhiteboardHistory(roomName: string): Promise<WhiteboardResponse> {
-    return this.request<WhiteboardResponse>(`/api/whiteboard?room=${roomName}`);
-  }
-
-  async handleWhiteboardAction(roomName: string, action: { type?: string; stroke?: any }): Promise<WhiteboardResponse> {
-    return this.request<WhiteboardResponse>('/api/whiteboard', {
-      method: 'POST',
-      body: JSON.stringify({ room: roomName, ...action }),
-    });
-  }
-
   // 파일을 S3에 직접 업로드 (Presigned URL 사용)
   async uploadFileToS3(uploadUrl: string, file: File): Promise<void> {
     const response = await fetch(uploadUrl, {
@@ -545,6 +490,29 @@ class ApiClient {
     if (!response.ok) {
       throw new Error('Failed to upload file to S3');
     }
+  }
+
+  // ========== 알림 API ==========
+  async getMyNotifications(): Promise<NotificationsResponse> {
+    return this.request<NotificationsResponse>('/api/notifications');
+  }
+
+  async acceptInvitation(notificationId: number): Promise<{ message: string; workspace_id: number }> {
+    return this.request(`/api/notifications/${notificationId}/accept`, {
+      method: 'POST',
+    });
+  }
+
+  async declineInvitation(notificationId: number): Promise<{ message: string }> {
+    return this.request(`/api/notifications/${notificationId}/decline`, {
+      method: 'POST',
+    });
+  }
+
+  async markNotificationAsRead(notificationId: number): Promise<{ message: string }> {
+    return this.request(`/api/notifications/${notificationId}/read`, {
+      method: 'POST',
+    });
   }
 }
 
@@ -560,10 +528,6 @@ export type {
   // Chat
   ChatMessage,
   ChatsResponse,
-  // ChatRoom
-  ChatRoom,
-  ChatRoomsResponse,
-  ChatRoomMessagesResponse,
   // Meeting
   Meeting,
   Participant,
@@ -577,4 +541,7 @@ export type {
   // Storage
   WorkspaceFile,
   FilesResponse,
+  // Notification
+  Notification,
+  NotificationsResponse,
 };

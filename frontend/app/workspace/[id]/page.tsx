@@ -3,14 +3,14 @@
 import { useState, useEffect, useCallback } from "react";
 import { useRouter, useParams } from "next/navigation";
 import { useAuth } from "../../lib/auth-context";
-import { apiClient, Workspace, ChatRoom, Meeting } from "../../lib/api";
+import { apiClient, Workspace } from "../../lib/api";
 import Sidebar from "./components/Sidebar";
 import MembersSection from "./components/MembersSection";
 import ChatSection from "./components/ChatSection";
 import CallsSection from "./components/CallsSection";
 import CalendarSection from "./components/CalendarSection";
 import StorageSection from "./components/StorageSection";
-import VideoCallFeature from "./components/VideoCallFeature";
+import NotificationDropdown from "../../components/NotificationDropdown";
 
 export default function WorkspaceDetailPage() {
   const router = useRouter();
@@ -23,10 +23,6 @@ export default function WorkspaceDetailPage() {
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [isLoadingWorkspace, setIsLoadingWorkspace] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
-  // 사이드바 데이터
-  const [chatRooms, setChatRooms] = useState<ChatRoom[]>([]);
-  const [meetings, setMeetings] = useState<Meeting[]>([]);
 
   // 워크스페이스 조회
   const fetchWorkspace = useCallback(async () => {
@@ -56,33 +52,12 @@ export default function WorkspaceDetailPage() {
     }
   }, [isLoading, isAuthenticated, router]);
 
-  // 사이드바 데이터 로드
-  const fetchSidebarData = useCallback(async (workspaceId: number) => {
-    try {
-      const [chatRoomsRes, meetingsRes] = await Promise.all([
-        apiClient.getChatRooms(workspaceId),
-        apiClient.getWorkspaceMeetings(workspaceId),
-      ]);
-      setChatRooms(chatRoomsRes.chatrooms);
-      setMeetings(meetingsRes.meetings);
-    } catch (err) {
-      console.error("Failed to fetch sidebar data:", err);
-    }
-  }, []);
-
   // 워크스페이스 로드
   useEffect(() => {
     if (isAuthenticated) {
       fetchWorkspace();
     }
   }, [isAuthenticated, fetchWorkspace]);
-
-  // 사이드바 데이터 로드
-  useEffect(() => {
-    if (workspace) {
-      fetchSidebarData(workspace.id);
-    }
-  }, [workspace, fetchSidebarData]);
 
   if (isLoading || isLoadingWorkspace) {
     return (
@@ -115,13 +90,6 @@ export default function WorkspaceDetailPage() {
   }
 
   const renderContent = () => {
-    // 통화방 채널 처리 (일반 통화 포함 모든 call- 섹션은 CallsSection으로 이동)
-    // 채팅방 채널 처리
-    if (activeSection.startsWith("chatroom-")) {
-      const roomId = parseInt(activeSection.replace("chatroom-", ""));
-      return <ChatSection workspaceId={workspace.id} selectedRoomId={roomId} />;
-    }
-
     // 통화방 채널 처리
     if (activeSection.startsWith("call-")) {
       return <CallsSection workspaceId={workspace.id} channelId={activeSection} />;
@@ -129,7 +97,7 @@ export default function WorkspaceDetailPage() {
 
     switch (activeSection) {
       case "members":
-        return <MembersSection workspace={workspace} />;
+        return <MembersSection workspace={workspace} onMembersUpdate={fetchWorkspace} />;
       case "chat":
         return <ChatSection workspaceId={workspace.id} />;
       case "calls":
@@ -139,7 +107,7 @@ export default function WorkspaceDetailPage() {
       case "storage":
         return <StorageSection workspaceId={workspace.id} />;
       default:
-        return <MembersSection workspace={workspace} />;
+        return <MembersSection workspace={workspace} onMembersUpdate={fetchWorkspace} />;
     }
   };
 
@@ -147,15 +115,11 @@ export default function WorkspaceDetailPage() {
     <div className="h-screen bg-white flex overflow-hidden">
       {/* Sidebar */}
       <Sidebar
-        workspaceId={workspace.id}
         workspaceName={workspace.name}
         activeSection={activeSection}
         onSectionChange={setActiveSection}
         isCollapsed={isSidebarCollapsed}
         onToggleCollapse={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
-        chatRooms={chatRooms}
-        meetings={meetings}
-        onRefreshSidebar={() => fetchSidebarData(workspace.id)}
       />
 
       {/* Main Content */}
@@ -163,34 +127,21 @@ export default function WorkspaceDetailPage() {
         {/* Top Bar */}
         <header className="h-14 border-b border-black/5 flex items-center justify-between px-6">
           <div className="flex items-center gap-4">
-            {/* Section Title */}
-            {activeSection.startsWith("chatroom-") && (() => {
-              const roomId = parseInt(activeSection.replace("chatroom-", ""));
-              const room = chatRooms.find(r => r.id === roomId);
-              return room ? (
-                <div className="flex items-center gap-2">
-                  <span className="text-xl text-black/30">#</span>
-                  <h1 className="text-lg font-semibold text-black">{room.title}</h1>
-                </div>
-              ) : null;
-            })()}
+            {/* Breadcrumb could go here */}
           </div>
 
           <div className="flex items-center gap-3">
             <button
               onClick={() => router.push("/workspace")}
-              className="p-2 rounded-lg text-black/40 hover:text-black/70 hover:bg-black/5 transition-colors"
-              title="워크스페이스 목록"
+              className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-black/60 hover:bg-black/5 rounded-lg transition-colors mr-2"
+              title="메인으로"
             >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
               </svg>
+              메인으로
             </button>
-            <button className="p-2 rounded-lg hover:bg-black/5 text-black/40 hover:text-black/70 transition-colors">
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
-              </svg>
-            </button>
+            <NotificationDropdown onInvitationAccepted={() => router.push("/workspace")} />
             {user.profileImg ? (
               <img
                 src={user.profileImg}

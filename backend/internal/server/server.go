@@ -23,21 +23,20 @@ import (
 
 // Server Fiber 서버 래퍼
 type Server struct {
-	app               *fiber.App
-	cfg               *config.Config
-	db                *gorm.DB
-	handler           *handler.AudioHandler
-	authHandler       *handler.AuthHandler
-	userHandler       *handler.UserHandler
-	workspaceHandler  *handler.WorkspaceHandler
-	chatHandler       *handler.ChatHandler
-	chatWSHandler     *handler.ChatWSHandler
-	meetingHandler    *handler.MeetingHandler
-	calendarHandler   *handler.CalendarHandler
-	storageHandler    *handler.StorageHandler
-	videoHandler      *handler.VideoHandler
-	whiteboardHandler *handler.WhiteboardHandler
-	jwtManager        *auth.JWTManager
+	app                 *fiber.App
+	cfg                 *config.Config
+	db                  *gorm.DB
+	handler             *handler.AudioHandler
+	authHandler         *handler.AuthHandler
+	userHandler         *handler.UserHandler
+	workspaceHandler    *handler.WorkspaceHandler
+	notificationHandler *handler.NotificationHandler
+	chatHandler         *handler.ChatHandler
+	chatWSHandler       *handler.ChatWSHandler
+	meetingHandler      *handler.MeetingHandler
+	calendarHandler     *handler.CalendarHandler
+	storageHandler      *handler.StorageHandler
+	jwtManager          *auth.JWTManager
 }
 
 // New 새 서버 인스턴스 생성
@@ -67,6 +66,7 @@ func New(cfg *config.Config, db *gorm.DB) *Server {
 	authHandler := handler.NewAuthHandler(db, jwtManager, googleAuth, cfg.Auth.SecureCookie)
 	userHandler := handler.NewUserHandler(db)
 	workspaceHandler := handler.NewWorkspaceHandler(db)
+	notificationHandler := handler.NewNotificationHandler(db)
 	chatHandler := handler.NewChatHandler(db)
 	chatWSHandler := handler.NewChatWSHandler(db)
 	meetingHandler := handler.NewMeetingHandler(db)
@@ -88,21 +88,20 @@ func New(cfg *config.Config, db *gorm.DB) *Server {
 	storageHandler := handler.NewStorageHandler(db, s3Service)
 
 	return &Server{
-		app:               app,
-		cfg:               cfg,
-		db:                db,
-		handler:           handler.NewAudioHandler(cfg),
-		authHandler:       authHandler,
-		userHandler:       userHandler,
-		workspaceHandler:  workspaceHandler,
-		chatHandler:       chatHandler,
-		chatWSHandler:     chatWSHandler,
-		meetingHandler:    meetingHandler,
-		calendarHandler:   calendarHandler,
-		storageHandler:    storageHandler,
-		videoHandler:      handler.NewVideoHandler(cfg, db),
-		whiteboardHandler: handler.NewWhiteboardHandler(db),
-		jwtManager:        jwtManager,
+		app:                 app,
+		cfg:                 cfg,
+		db:                  db,
+		handler:             handler.NewAudioHandler(cfg),
+		authHandler:         authHandler,
+		userHandler:         userHandler,
+		workspaceHandler:    workspaceHandler,
+		notificationHandler: notificationHandler,
+		chatHandler:         chatHandler,
+		chatWSHandler:       chatWSHandler,
+		meetingHandler:      meetingHandler,
+		calendarHandler:     calendarHandler,
+		storageHandler:      storageHandler,
+		jwtManager:          jwtManager,
 	}
 }
 
@@ -170,19 +169,18 @@ func (s *Server) SetupRoutes() {
 	workspaceGroup.Get("/", s.workspaceHandler.GetMyWorkspaces)
 	workspaceGroup.Get("/:id", s.workspaceHandler.GetWorkspace)
 	workspaceGroup.Post("/:id/members", s.workspaceHandler.AddMembers)
+	workspaceGroup.Delete("/:id/leave", s.workspaceHandler.LeaveWorkspace)
 
-	// Chat 라우트 (워크스페이스 하위) - 레거시
+	// Notification 라우트 그룹 (인증 필요)
+	notificationGroup := s.app.Group("/api/notifications", auth.AuthMiddleware(s.jwtManager))
+	notificationGroup.Get("", s.notificationHandler.GetMyNotifications)
+	notificationGroup.Post("/:id/accept", s.notificationHandler.AcceptInvitation)
+	notificationGroup.Post("/:id/decline", s.notificationHandler.DeclineInvitation)
+	notificationGroup.Post("/:id/read", s.notificationHandler.MarkAsRead)
+
+	// Chat 라우트 (워크스페이스 하위)
 	workspaceGroup.Get("/:workspaceId/chats", s.chatHandler.GetWorkspaceChats)
 	workspaceGroup.Post("/:workspaceId/chats", s.chatHandler.SendMessage)
-
-	// ChatRoom 라우트 (새 채팅방 시스템)
-	workspaceGroup.Get("/:workspaceId/chatrooms", s.chatHandler.GetChatRooms)
-	workspaceGroup.Post("/:workspaceId/chatrooms", s.chatHandler.CreateChatRoom)
-	workspaceGroup.Delete("/:workspaceId/chatrooms/:roomId", s.chatHandler.DeleteChatRoom)
-	workspaceGroup.Get("/:workspaceId/chatrooms/:roomId/messages", s.chatHandler.GetChatRoomMessages)
-	workspaceGroup.Post("/:workspaceId/chatrooms/:roomId/messages", s.chatHandler.SendChatRoomMessage)
-	workspaceGroup.Put("/:workspaceId/chatrooms/:roomId/messages/:messageId", s.chatHandler.UpdateChatMessage)
-	workspaceGroup.Delete("/:workspaceId/chatrooms/:roomId/messages/:messageId", s.chatHandler.DeleteChatMessage)
 
 	// Meeting 라우트 (워크스페이스 하위)
 	workspaceGroup.Get("/:workspaceId/meetings", s.meetingHandler.GetWorkspaceMeetings)
@@ -210,14 +208,6 @@ func (s *Server) SetupRoutes() {
 	workspaceGroup.Post("/:workspaceId/files/confirm", s.storageHandler.ConfirmUpload)
 	workspaceGroup.Get("/:workspaceId/files/:fileId/download", s.storageHandler.GetDownloadURL)
 
-	// Video Call 라우트
-	s.app.Post("/api/video/token", auth.AuthMiddleware(s.jwtManager), s.videoHandler.GenerateToken)
-
-	// Whiteboard 라우트
-	whiteboardGroup := s.app.Group("/api/whiteboard", auth.AuthMiddleware(s.jwtManager))
-	whiteboardGroup.Get("", s.whiteboardHandler.GetWhiteboard)
-	whiteboardGroup.Post("", s.whiteboardHandler.HandleWhiteboard)
-
 	// WebSocket 업그레이드 체크 미들웨어
 	s.app.Use("/ws", func(c *fiber.Ctx) error {
 		if websocket.IsWebSocketUpgrade(c) {
@@ -234,7 +224,7 @@ func (s *Server) SetupRoutes() {
 	}))
 
 	// WebSocket 채팅 엔드포인트
-	s.app.Get("/ws/chat/:workspaceId/:roomId", func(c *fiber.Ctx) error {
+	s.app.Get("/ws/chat/:workspaceId", func(c *fiber.Ctx) error {
 		if !websocket.IsWebSocketUpgrade(c) {
 			return fiber.ErrUpgradeRequired
 		}
@@ -262,13 +252,6 @@ func (s *Server) SetupRoutes() {
 			})
 		}
 
-		roomID, err := c.ParamsInt("roomId")
-		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": "invalid room id",
-			})
-		}
-
 		// 멤버 확인
 		var count int64
 		s.db.Table("workspace_members").
@@ -280,24 +263,13 @@ func (s *Server) SetupRoutes() {
 			})
 		}
 
-		// 채팅방이 해당 워크스페이스에 속하는지 확인
-		var roomCount int64
-		s.db.Table("meetings").
-			Where("id = ? AND workspace_id = ? AND type = ?", roomID, workspaceID, "CHAT_ROOM").
-			Count(&roomCount)
-		if roomCount == 0 {
-			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
-				"error": "chat room not found in this workspace",
-			})
-		}
-
 		// 유저 정보 조회
 		var user struct {
 			Nickname string
 		}
 		s.db.Table("users").Select("nickname").Where("id = ?", claims.UserID).Scan(&user)
 
-		c.Locals("roomId", int64(roomID))
+		c.Locals("workspaceId", int64(workspaceID))
 		c.Locals("userId", claims.UserID)
 		c.Locals("nickname", user.Nickname)
 

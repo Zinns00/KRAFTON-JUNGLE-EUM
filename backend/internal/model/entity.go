@@ -79,6 +79,7 @@ type WorkspaceMember struct {
 	WorkspaceID int64     `gorm:"not null" json:"workspace_id"`
 	UserID      int64     `gorm:"not null" json:"user_id"`
 	RoleID      *int64    `json:"role_id,omitempty"`
+	Status      string    `gorm:"type:varchar(20);default:'ACTIVE'" json:"status"` // PENDING, ACTIVE, LEFT
 	JoinedAt    time.Time `gorm:"autoCreateTime" json:"joined_at"`
 
 	// Relations
@@ -120,7 +121,7 @@ func (Meeting) TableName() string {
 type Participant struct {
 	ID        int64      `gorm:"primaryKey;autoIncrement" json:"id"`
 	MeetingID int64      `gorm:"not null" json:"meeting_id"`
-	UserID    *int64     `json:"user_id,omitempty"` // 비회원 허용
+	UserID    *int64     `json:"user_id,omitempty"`                     // 비회원 허용
 	Role      string     `gorm:"type:varchar(20);not null" json:"role"` // HOST, PRESENTER, GUEST
 	JoinedAt  time.Time  `gorm:"autoCreateTime" json:"joined_at"`
 	LeftAt    *time.Time `json:"left_at,omitempty"`
@@ -139,8 +140,7 @@ type Whiteboard struct {
 	ID          int64     `gorm:"primaryKey;autoIncrement" json:"id"`
 	MeetingID   *int64    `json:"meeting_id,omitempty"`
 	WorkspaceID int64     `gorm:"not null" json:"workspace_id"`
-	Data        *string   `gorm:"type:jsonb" json:"data,omitempty"` // JSONB - Stroke history
-	RedoData    *string   `gorm:"type:jsonb" json:"redo_data,omitempty"` // JSONB - Redo stack
+	Data        *string   `gorm:"type:jsonb" json:"data,omitempty"` // JSONB
 	UpdatedAt   time.Time `gorm:"autoUpdateTime" json:"updated_at"`
 
 	// Relations
@@ -154,13 +154,12 @@ func (Whiteboard) TableName() string {
 
 // ChatLog 채팅 로그
 type ChatLog struct {
-	ID        int64      `gorm:"primaryKey;autoIncrement" json:"id"`
-	MeetingID int64      `gorm:"not null;index" json:"meeting_id"`
-	SenderID  *int64     `gorm:"index" json:"sender_id,omitempty"`
-	Message   *string    `gorm:"type:text" json:"message,omitempty"`
-	Type      string     `gorm:"type:varchar(20);default:'TEXT'" json:"type"` // TEXT, SYSTEM
-	CreatedAt time.Time  `gorm:"autoCreateTime;index" json:"created_at"`
-	UpdatedAt *time.Time `gorm:"autoUpdateTime" json:"updated_at,omitempty"`
+	ID        int64     `gorm:"primaryKey;autoIncrement" json:"id"`
+	MeetingID int64     `gorm:"not null" json:"meeting_id"`
+	SenderID  *int64    `json:"sender_id,omitempty"`
+	Message   *string   `gorm:"type:text" json:"message,omitempty"`
+	Type      string    `gorm:"type:varchar(20);default:'TEXT'" json:"type"` // TEXT, SYSTEM
+	CreatedAt time.Time `gorm:"autoCreateTime" json:"created_at"`
 
 	// Relations
 	Meeting Meeting `gorm:"foreignKey:MeetingID" json:"meeting,omitempty"`
@@ -228,11 +227,11 @@ type WorkspaceFile struct {
 	CreatedAt        time.Time `gorm:"autoCreateTime" json:"created_at"`
 
 	// Relations
-	Workspace      Workspace      `gorm:"foreignKey:WorkspaceID" json:"workspace,omitempty"`
-	Uploader       *User          `gorm:"foreignKey:UploaderID" json:"uploader,omitempty"`
-	ParentFolder   *WorkspaceFile `gorm:"foreignKey:ParentFolderID" json:"parent_folder,omitempty"`
+	Workspace      Workspace       `gorm:"foreignKey:WorkspaceID" json:"workspace,omitempty"`
+	Uploader       *User           `gorm:"foreignKey:UploaderID" json:"uploader,omitempty"`
+	ParentFolder   *WorkspaceFile  `gorm:"foreignKey:ParentFolderID" json:"parent_folder,omitempty"`
 	Children       []WorkspaceFile `gorm:"foreignKey:ParentFolderID" json:"children,omitempty"`
-	RelatedMeeting *Meeting       `gorm:"foreignKey:RelatedMeetingID" json:"related_meeting,omitempty"`
+	RelatedMeeting *Meeting        `gorm:"foreignKey:RelatedMeetingID" json:"related_meeting,omitempty"`
 }
 
 func (WorkspaceFile) TableName() string {
