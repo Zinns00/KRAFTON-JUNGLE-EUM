@@ -96,7 +96,7 @@ export default function WorkspaceDetailPage() {
 
     switch (activeSection) {
       case "members":
-        return <MembersSection workspace={workspace} />;
+        return <MembersSection workspace={workspace} onMembersUpdate={fetchWorkspace} />;
       case "chat":
         return <ChatSection workspaceId={workspace.id} />;
       case "calls":
@@ -106,7 +106,7 @@ export default function WorkspaceDetailPage() {
       case "storage":
         return <StorageSection workspaceId={workspace.id} />;
       default:
-        return <MembersSection workspace={workspace} />;
+        return <MembersSection workspace={workspace} onMembersUpdate={fetchWorkspace} />;
     }
   };
 
