@@ -52,7 +52,7 @@ jobs:
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
           echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
-      # 5. 현재 Task Definition 가져오기
+      # 5. 현재 Task Definition 가져오기 (파일로 저장)
       - name: Download current task definition
         run: |
           aws ecs describe-task-definition \
@@ -60,7 +60,8 @@ jobs:
             --query taskDefinition \
             > task-definition.json
 
-      # 6. Task Definition에 새 이미지 적용
+      # 6. Task Definition에 새 이미지 ID 끼워넣기 (Render)
+      # 주의: 여기는 deploy가 아니라 render 액션을 써야 합니다!
       - name: Fill in the new image ID in the task definition
         id: task-def
         uses: aws-actions/amazon-ecs-render-task-definition@v1
@@ -69,9 +70,10 @@ jobs:
           container-name: ${{ env.CONTAINER_NAME }}
           image: ${{ steps.build-image.outputs.image }}
 
-      # 7. ECS 서비스 배포
+      # 7. ECS 서비스 배포 (Deploy)
+      # 주의: 여기서 v1을 쓰면 에러가 납니다. v2로 수정했습니다.
       - name: Deploy to Amazon ECS
-        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
         with:
           task-definition: ${{ steps.task-def.outputs.task-definition }}
           service: ${{ env.ECS_SERVICE }}
