@@ -4,8 +4,8 @@ import { useRef, useState, useCallback, useEffect } from "react";
 
 interface UseAudioPlaybackOptions {
     volume?: number;
-    onPlayStart?: () => void;
-    onPlayEnd?: () => void;
+    onPlayStart?: (participantId?: string) => void;
+    onPlayEnd?: (participantId?: string) => void;
     onError?: (error: Error) => void;
 }
 
@@ -13,16 +13,18 @@ interface AudioQueueItem {
     data: ArrayBuffer;
     sampleRate: number;
     isPCM: boolean;
+    participantId?: string;
 }
 
 interface UseAudioPlaybackReturn {
     isPlaying: boolean;
+    currentParticipantId: string | null;
     volume: number;
     setVolume: (volume: number) => void;
-    playAudio: (audioData: ArrayBuffer) => Promise<void>;
-    playPCMAudio: (audioData: ArrayBuffer, sampleRate?: number) => Promise<void>;
+    playAudio: (audioData: ArrayBuffer, participantId?: string) => Promise<void>;
+    playPCMAudio: (audioData: ArrayBuffer, sampleRate?: number, participantId?: string) => Promise<void>;
     stopAudio: () => void;
-    queueAudio: (audioData: ArrayBuffer, sampleRate?: number) => void;
+    queueAudio: (audioData: ArrayBuffer, sampleRate?: number, participantId?: string) => void;
 }
 
 export function useAudioPlayback({
@@ -36,8 +38,10 @@ export function useAudioPlayback({
     const gainNodeRef = useRef<GainNode | null>(null);
     const audioQueueRef = useRef<AudioQueueItem[]>([]);
     const isProcessingRef = useRef(false);
+    const currentParticipantIdRef = useRef<string | null>(null);
 
     const [isPlaying, setIsPlaying] = useState(false);
+    const [currentParticipantId, setCurrentParticipantId] = useState<string | null>(null);
     const [volume, setVolumeState] = useState(initialVolume);
 
     // AudioContext 초기화 (특정 샘플레이트로)
@@ -76,7 +80,7 @@ export function useAudioPlayback({
     }, []);
 
     // PCM 오디오 재생 (Int16 → Float32 변환)
-    const playPCMAudio = useCallback(async (audioData: ArrayBuffer, sampleRate: number = 22050): Promise<void> => {
+    const playPCMAudio = useCallback(async (audioData: ArrayBuffer, sampleRate: number = 22050, participantId?: string): Promise<void> => {
         try {
             const audioContext = getAudioContext(sampleRate);
 
@@ -108,28 +112,34 @@ export function useAudioPlayback({
             }
 
             sourceNodeRef.current = sourceNode;
+            currentParticipantIdRef.current = participantId || null;
+            setCurrentParticipantId(participantId || null);
 
             return new Promise<void>((resolve) => {
                 sourceNode.onended = () => {
                     setIsPlaying(false);
+                    setCurrentParticipantId(null);
                     sourceNodeRef.current = null;
-                    onPlayEnd?.();
+                    currentParticipantIdRef.current = null;
+                    onPlayEnd?.(participantId);
                     resolve();
                 };
 
                 setIsPlaying(true);
-                onPlayStart?.();
+                onPlayStart?.(participantId);
                 sourceNode.start(0);
             });
         } catch (error) {
             console.error("[AudioPlayback] Failed to play PCM audio:", error);
             setIsPlaying(false);
+            setCurrentParticipantId(null);
+            currentParticipantIdRef.current = null;
             onError?.(error instanceof Error ? error : new Error('PCM audio playback failed'));
         }
     }, [getAudioContext, onPlayStart, onPlayEnd, onError]);
 
     // MP3 오디오 재생 (기존 방식)
-    const playAudio = useCallback(async (audioData: ArrayBuffer): Promise<void> => {
+    const playAudio = useCallback(async (audioData: ArrayBuffer, participantId?: string): Promise<void> => {
         try {
             const audioContext = getAudioContext();
 
@@ -153,22 +163,28 @@ export function useAudioPlayback({
             }
 
             sourceNodeRef.current = sourceNode;
+            currentParticipantIdRef.current = participantId || null;
+            setCurrentParticipantId(participantId || null);
 
             return new Promise<void>((resolve) => {
                 sourceNode.onended = () => {
                     setIsPlaying(false);
+                    setCurrentParticipantId(null);
                     sourceNodeRef.current = null;
-                    onPlayEnd?.();
+                    currentParticipantIdRef.current = null;
+                    onPlayEnd?.(participantId);
                     resolve();
                 };
 
                 setIsPlaying(true);
-                onPlayStart?.();
+                onPlayStart?.(participantId);
                 sourceNode.start(0);
             });
         } catch (error) {
             console.error("[AudioPlayback] Failed to play audio:", error);
             setIsPlaying(false);
+            setCurrentParticipantId(null);
+            currentParticipantIdRef.current = null;
             onError?.(error instanceof Error ? error : new Error('Audio playback failed'));
         }
     }, [getAudioContext, onPlayStart, onPlayEnd, onError]);
@@ -185,9 +201,9 @@ export function useAudioPlayback({
             const item = audioQueueRef.current.shift();
             if (item) {
                 if (item.isPCM) {
-                    await playPCMAudio(item.data, item.sampleRate);
+                    await playPCMAudio(item.data, item.sampleRate, item.participantId);
                 } else {
-                    await playAudio(item.data);
+                    await playAudio(item.data, item.participantId);
                 }
             }
         }
@@ -196,12 +212,13 @@ export function useAudioPlayback({
     }, [playAudio, playPCMAudio]);
 
     // 오디오 큐에 추가 (PCM 형식 - sampleRate가 있으면 PCM으로 처리)
-    const queueAudio = useCallback((audioData: ArrayBuffer, sampleRate?: number) => {
+    const queueAudio = useCallback((audioData: ArrayBuffer, sampleRate?: number, participantId?: string) => {
         const isPCM = sampleRate !== undefined;
         audioQueueRef.current.push({
             data: audioData,
             sampleRate: sampleRate || 44100,
             isPCM,
+            participantId,
         });
 
         // 재생 중이 아니면 큐 처리 시작
@@ -238,6 +255,7 @@ export function useAudioPlayback({
 
     return {
         isPlaying,
+        currentParticipantId,
         volume,
         setVolume,
         playAudio,

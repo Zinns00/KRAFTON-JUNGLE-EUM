@@ -24,6 +24,7 @@ interface HandshakeResponse {
 
 interface TranscriptMessage {
     type: 'transcript';
+    participantId?: string;
     text: string;
     original: string;
     translated: string;
@@ -31,6 +32,7 @@ interface TranscriptMessage {
 }
 
 export interface TranscriptData {
+    participantId?: string;
     original: string;
     translated: string;
     isFinal: boolean;
@@ -41,8 +43,9 @@ interface UseAudioWebSocketConfig {
     channels?: number;
     bitsPerSample?: number;
     targetLanguage?: TargetLanguage;
+    participantId?: string;
     onTranscript?: (data: TranscriptData) => void;
-    onAudio?: (audioData: ArrayBuffer, sampleRate: number) => void;
+    onAudio?: (audioData: ArrayBuffer, sampleRate: number, participantId?: string) => void;
     onStatusChange?: (status: ConnectionStatus) => void;
     onError?: (error: Error) => void;
     enabled?: boolean;
@@ -64,6 +67,7 @@ export function useAudioWebSocket({
     channels = 1,
     bitsPerSample = 16,
     targetLanguage = 'en',
+    participantId,
     onTranscript,
     onAudio,
     onStatusChange,
@@ -79,6 +83,7 @@ export function useAudioWebSocket({
     const isMountedRef = useRef(false);
     const enabledRef = useRef(enabled);
     const targetLanguageRef = useRef(targetLanguage);
+    const participantIdRef = useRef(participantId);
 
     // 콜백 refs (최신 콜백 유지 - 매 렌더마다 업데이트)
     const onTranscriptRef = useRef(onTranscript);
@@ -98,6 +103,11 @@ export function useAudioWebSocket({
         targetLanguageRef.current = targetLanguage;
     }, [targetLanguage]);
 
+    // participantId 값을 ref에 동기화
+    useEffect(() => {
+        participantIdRef.current = participantId;
+    }, [participantId]);
+
     const updateStatus = useCallback((newStatus: ConnectionStatus) => {
         if (!isMountedRef.current) return;
         setStatus(newStatus);
@@ -115,9 +125,12 @@ export function useAudioWebSocket({
             return;
         }
 
-        // 언어 파라미터 포함한 URL 생성
-        const wsUrl = `${WS_BASE_URL}?lang=${targetLanguageRef.current}`;
-        console.log("[AudioWS] Connecting to:", wsUrl, "with language:", targetLanguageRef.current);
+        // 언어 및 participantId 파라미터 포함한 URL 생성
+        let wsUrl = `${WS_BASE_URL}?lang=${targetLanguageRef.current}`;
+        if (participantIdRef.current) {
+            wsUrl += `&participantId=${encodeURIComponent(participantIdRef.current)}`;
+        }
+        console.log("[AudioWS] Connecting to:", wsUrl, "with language:", targetLanguageRef.current, "participantId:", participantIdRef.current);
         updateStatus('connecting');
         isHandshakeCompleteRef.current = false;
 
@@ -179,7 +192,8 @@ export function useAudioWebSocket({
                     if (data.type === 'transcript') {
                         console.log("[AudioWS] Type check passed! Calling onTranscriptRef.current");
                         console.log("[AudioWS] onTranscriptRef.current exists:", !!onTranscriptRef.current);
-                        const transcriptData = {
+                        const transcriptData: TranscriptData = {
+                            participantId: data.participantId || participantIdRef.current,
                             original: data.original || data.text,
                             translated: data.translated || data.text,
                             isFinal: data.isFinal,
@@ -194,9 +208,9 @@ export function useAudioWebSocket({
                     console.error("[AudioWS] Failed to parse transcript message:", e);
                 }
             } else if (event.data instanceof ArrayBuffer) {
-                // Binary 응답 (TTS audio - PCM Int16 @ 22050Hz)
-                console.log("[AudioWS] Received audio data:", event.data.byteLength, "bytes");
-                onAudioRef.current?.(event.data, 22050);
+                // Binary 응답 (TTS audio - MP3 format)
+                console.log("[AudioWS] Received audio data:", event.data.byteLength, "bytes", "participantId:", participantIdRef.current);
+                onAudioRef.current?.(event.data, 24000, participantIdRef.current);
             }
         };
 

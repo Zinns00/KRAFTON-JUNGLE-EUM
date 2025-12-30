@@ -61,6 +61,12 @@ func (h *AudioHandler) HandleWebSocket(c *websocket.Conn) {
 		log.Printf("🌐 [%s] Target language: %s", sess.ID, lang)
 	}
 
+	// 발화자 식별 ID 추출 (Locals에서)
+	if participantId, ok := c.Locals("participantId").(string); ok && participantId != "" {
+		sess.SetParticipantID(participantId)
+		log.Printf("👤 [%s] Participant ID: %s", sess.ID, participantId)
+	}
+
 	log.Printf("🔗 [%s] New WebSocket connection established", sess.ID)
 
 	// Graceful Shutdown & Resource Cleanup
@@ -344,11 +350,12 @@ func (h *AudioHandler) aiUnifiedWorker(sess *session.Session) {
 				mu.Unlock()
 
 				transcriptMsg := &session.TranscriptMessage{
-					Type:       "transcript",
-					Text:       translatedText,
-					Original:   originalText,
-					Translated: translatedText,
-					IsFinal:    true,
+					Type:          "transcript",
+					ParticipantID: sess.GetParticipantID(),
+					Text:          translatedText,
+					Original:      originalText,
+					Translated:    translatedText,
+					IsFinal:       true,
 				}
 				select {
 				case sess.TranscriptChan <- transcriptMsg:
@@ -374,11 +381,12 @@ func (h *AudioHandler) aiUnifiedWorker(sess *session.Session) {
 				mu.Unlock()
 
 				transcriptMsg := &session.TranscriptMessage{
-					Type:       "transcript",
-					Text:       text,
-					Original:   originalText,
-					Translated: text,
-					IsFinal:    true,
+					Type:          "transcript",
+					ParticipantID: sess.GetParticipantID(),
+					Text:          text,
+					Original:      originalText,
+					Translated:    text,
+					IsFinal:       true,
 				}
 				select {
 				case sess.TranscriptChan <- transcriptMsg:

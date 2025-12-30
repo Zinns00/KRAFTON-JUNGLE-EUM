@@ -9,12 +9,12 @@ import '@livekit/components-styles';
 import { apiClient } from '@/app/lib/api';
 import { useAuth } from '@/app/lib/auth-context';
 import CustomVideoConference from '@/components/video/CustomVideoConference';
-import WhiteboardCanvas from '@/components/video/WhiteboardCanvas';
+import WhiteboardCanvas from '@/components/video/whiteboard/WhiteboardCanvas';
 import ParticipantSidebar from '@/components/video/ParticipantSidebar';
 import ChatPanel, { VoiceRecord } from '@/components/video/ChatPanel';
 import SubtitleOverlay from '@/components/video/SubtitleOverlay';
-import { useLiveKitTranslation } from '@/app/hooks/useLiveKitTranslation';
-import { TranscriptData, TargetLanguage } from '@/app/hooks/useAudioWebSocket';
+import { useRemoteParticipantTranslation, RemoteTranscriptData } from '@/app/hooks/useRemoteParticipantTranslation';
+import { TargetLanguage } from '@/app/hooks/useAudioWebSocket';
 
 const LIVEKIT_URL = process.env.NEXT_PUBLIC_LIVEKIT_URL || 'ws://localhost:7880';
 
@@ -42,10 +42,13 @@ function VideoCallContent({
     const [targetLanguage, setTargetLanguage] = useState<TargetLanguage>('en');
     const [unreadCount, setUnreadCount] = useState(0);
     const [voiceRecords, setVoiceRecords] = useState<VoiceRecord[]>([]);
+    const [currentSpeaker, setCurrentSpeaker] = useState<{ name: string; profileImg?: string } | null>(null);
+    const [currentTranscript, setCurrentTranscript] = useState<string | null>(null);
     const lastTranscriptRef = useRef<string | null>(null);
+    const transcriptTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-    // 번역 결과를 음성 기록에 추가
-    const handleTranscript = useCallback((data: TranscriptData) => {
+    // 번역 결과를 음성 기록에 추가 (원격 참가자의 음성)
+    const handleTranscript = useCallback((data: RemoteTranscriptData) => {
         console.log("[VideoCallFeature] ========================================");
         console.log("[VideoCallFeature] handleTranscript called!");
         console.log("[VideoCallFeature] data:", JSON.stringify(data, null, 2));
@@ -58,10 +61,26 @@ function VideoCallContent({
         }
         lastTranscriptRef.current = data.translated;
 
+        // 현재 발화자 및 자막 설정
+        setCurrentSpeaker({
+            name: data.participantName || data.participantId,
+            profileImg: undefined,
+        });
+        setCurrentTranscript(data.translated);
+
+        // 5초 후 자막 클리어
+        if (transcriptTimeoutRef.current) {
+            clearTimeout(transcriptTimeoutRef.current);
+        }
+        transcriptTimeoutRef.current = setTimeout(() => {
+            setCurrentTranscript(null);
+            setCurrentSpeaker(null);
+        }, 5000);
+
         const newRecord: VoiceRecord = {
             id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-            speaker: user?.nickname || 'Anonymous',
-            profileImg: user?.profileImg,
+            speaker: data.participantName || data.participantId,
+            profileImg: undefined,
             original: data.original,
             translated: data.translated,
             timestamp: Date.now(),
@@ -74,18 +93,17 @@ function VideoCallContent({
             return newRecords;
         });
         console.log("[VideoCallFeature] ========================================");
-    }, [user?.nickname, user?.profileImg]);
+    }, []);
 
-    // LiveKit 마이크 트랙을 사용하는 번역 훅
+    // 원격 참가자 음성 번역 훅 (다른 사람들의 음성을 번역)
     const {
         isActive: isTranslationActive,
-        currentTranscript,
-        start: startTranslation,
-        stop: stopTranslation,
-    } = useLiveKitTranslation({
-        chunkIntervalMs: 1500,
-        autoPlayTTS: true,
+        activeParticipantCount,
+    } = useRemoteParticipantTranslation({
+        enabled: isTranslationOpen,
         targetLanguage,
+        autoPlayTTS: true,
+        chunkIntervalMs: 1500,
         onTranscript: handleTranscript,
     });
 
@@ -111,15 +129,8 @@ function VideoCallContent({
     }, []);
 
     const toggleTranslation = useCallback(() => {
-        setIsTranslationOpen(prev => {
-            if (!prev) {
-                startTranslation();
-            } else {
-                stopTranslation();
-            }
-            return !prev;
-        });
-    }, [startTranslation, stopTranslation]);
+        setIsTranslationOpen(prev => !prev);
+    }, []);
 
     const handleNewMessage = useCallback(() => {
         if (!isChatOpen) setUnreadCount(prev => prev + 1);
@@ -197,10 +208,7 @@ function VideoCallContent({
             {/* 실시간 자막 오버레이 */}
             <SubtitleOverlay
                 text={currentTranscript}
-                speaker={user ? {
-                    name: user.nickname || 'Anonymous',
-                    profileImg: user.profileImg
-                } : undefined}
+                speaker={currentSpeaker || undefined}
                 isActive={isTranslationActive}
             />
         </>

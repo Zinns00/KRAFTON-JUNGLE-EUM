@@ -274,6 +274,10 @@ func (s *Server) SetupRoutes() {
 		}
 		c.Locals("lang", lang)
 
+		// 발화자 식별 ID 추출 (원격 참가자의 identity)
+		participantId := c.Query("participantId", "")
+		c.Locals("participantId", participantId)
+
 		return c.Next()
 	}, websocket.New(s.handler.HandleWebSocket, websocket.Config{
 		ReadBufferSize:  s.cfg.WebSocket.ReadBufferSize,
