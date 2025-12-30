@@ -147,10 +147,7 @@ func (s *Server) SetupMiddleware() {
 func (s *Server) SetupRoutes() {
 	// 헬스체크 엔드포인트
 	s.app.Get("/health", func(c *fiber.Ctx) error {
-		return c.JSON(fiber.Map{
-			"status":    "ok",
-			"timestamp": time.Now().Unix(),
-		})
+		return c.SendStatus(fiber.StatusOK)
 	})
 
 	// Rate Limiter 설정 (인증 엔드포인트용 - Brute Force 방지)
