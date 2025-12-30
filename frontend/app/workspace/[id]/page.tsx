@@ -11,11 +11,12 @@ import CallsSection from "./components/CallsSection";
 import CalendarSection from "./components/CalendarSection";
 import StorageSection from "./components/StorageSection";
 import NotificationDropdown from "../../components/NotificationDropdown";
+import EditProfileModal from "../../../components/EditProfileModal"; // Import Modal
 
 export default function WorkspaceDetailPage() {
   const router = useRouter();
   const params = useParams();
-  const { user, isAuthenticated, isLoading } = useAuth();
+  const { user, isAuthenticated, isLoading, refreshUser } = useAuth(); // Add refreshUser
   const [activeSection, setActiveSection] = useState("members");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [currentChatRoomTitle, setCurrentChatRoomTitle] = useState("");
@@ -24,6 +25,21 @@ export default function WorkspaceDetailPage() {
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [isLoadingWorkspace, setIsLoadingWorkspace] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const [isEditProfileModalOpen, setIsEditProfileModalOpen] = useState(false); // Modal State
+
+  // 로그아웃 핸들러
+  const handleLogout = async () => {
+    await useAuth().logout();
+    router.push("/");
+  };
+
+  // 프로필 수정 핸들러
+  const handleUpdateProfile = async () => {
+    await refreshUser();
+    setIsEditProfileModalOpen(false);
+  };
 
   // 워크스페이스 조회
   const fetchWorkspace = useCallback(async () => {
@@ -99,7 +115,17 @@ export default function WorkspaceDetailPage() {
     // 채팅방 처리
     if (activeSection.startsWith("chat-")) {
       const roomId = parseInt(activeSection.replace("chat-", ""), 10);
-      return <ChatSection workspaceId={workspace.id} roomId={roomId} onRoomTitleChange={setCurrentChatRoomTitle} />;
+      const myMember = workspace.members?.find(m => m.user_id === user?.id);
+      const canSendMessages = workspace.owner_id === user?.id || myMember?.role?.permissions?.includes("SEND_MESSAGES");
+
+      return (
+        <ChatSection
+          workspaceId={workspace.id}
+          roomId={roomId}
+          onRoomTitleChange={setCurrentChatRoomTitle}
+          canSendMessages={canSendMessages}
+        />
+      );
     }
 
     switch (activeSection) {
@@ -126,6 +152,8 @@ export default function WorkspaceDetailPage() {
     }
   };
 
+
+
   return (
     <div className="h-screen bg-white flex overflow-hidden">
       {/* Sidebar */}
@@ -136,6 +164,7 @@ export default function WorkspaceDetailPage() {
         onSectionChange={setActiveSection}
         isCollapsed={isSidebarCollapsed}
         onToggleCollapse={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
+        onUpdateWorkspace={(name) => setWorkspace((prev) => (prev ? { ...prev, name } : null))}
       />
 
       {/* Main Content */}
@@ -145,12 +174,13 @@ export default function WorkspaceDetailPage() {
           <div className="flex items-center gap-4">
             <button
               onClick={() => router.push("/workspace")}
-              className="group flex items-center gap-2 text-black/40 hover:text-black transition-colors"
+              className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-red-500 hover:bg-red-50 rounded-lg transition-colors mr-2"
+              title="워크스페이스 나가기"
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 19l-7-7 7-7" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
               </svg>
-              <span className="text-sm font-medium">워크스페이스</span>
+              나가기
             </button>
             {activeSection.startsWith("chat-") && currentChatRoomTitle && (
               <>
@@ -162,21 +192,59 @@ export default function WorkspaceDetailPage() {
 
           <div className="flex items-center gap-3">
             <NotificationDropdown onInvitationAccepted={() => router.push("/workspace")} />
-            {user.profileImg ? (
-              <img
-                src={user.profileImg}
-                alt={user.nickname}
-                className="w-8 h-8 rounded-full object-cover hover:ring-2 hover:ring-black/10 transition-all"
-              />
-            ) : (
-              <div
-                className="w-8 h-8 rounded-full bg-black flex items-center justify-center hover:ring-2 hover:ring-black/20 transition-all"
+
+            {/* Profile */}
+            <div className="relative">
+              <button
+                onClick={() => setShowProfileMenu(!showProfileMenu)}
+                className="flex items-center gap-2 hover:opacity-70 transition-opacity"
               >
-                <span className="text-xs font-medium text-white">
-                  {user.nickname.charAt(0).toUpperCase()}
-                </span>
-              </div>
-            )}
+                {user.profileImg ? (
+                  <img
+                    src={user.profileImg}
+                    alt={user.nickname}
+                    className="w-8 h-8 rounded-full object-cover hover:ring-2 hover:ring-black/10 transition-all"
+                  />
+                ) : (
+                  <div className="w-8 h-8 rounded-full bg-black flex items-center justify-center hover:ring-2 hover:ring-black/20 transition-all">
+                    <span className="text-xs font-medium text-white">
+                      {user.nickname.charAt(0).toUpperCase()}
+                    </span>
+                  </div>
+                )}
+              </button>
+
+              {/* Profile Dropdown */}
+              {showProfileMenu && (
+                <>
+                  <div
+                    className="fixed inset-0 z-10"
+                    onClick={() => setShowProfileMenu(false)}
+                  />
+                  <div className="absolute right-0 mt-2 w-64 bg-white border border-black/10 shadow-lg z-20 rounded-md">
+                    <div className="p-4 border-b border-black/5">
+                      <p className="font-medium text-black">{user.nickname}</p>
+                      <p className="text-sm text-black/50 mt-0.5">{user.email}</p>
+                    </div>
+                    <button
+                      onClick={() => {
+                        setShowProfileMenu(false);
+                        setIsEditProfileModalOpen(true);
+                      }}
+                      className="w-full px-4 py-3 text-left text-sm text-black/70 hover:bg-black/5 transition-colors"
+                    >
+                      프로필 수정
+                    </button>
+                    <button
+                      onClick={handleLogout}
+                      className="w-full px-4 py-3 text-left text-sm text-black/70 hover:bg-black/5 transition-colors rounded-b-md"
+                    >
+                      로그아웃
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </header>
 
@@ -185,6 +253,15 @@ export default function WorkspaceDetailPage() {
           {renderContent()}
         </main>
       </div>
+
+      {/* Edit Profile Modal */}
+      {isEditProfileModalOpen && (
+        <EditProfileModal
+          user={user}
+          onClose={() => setIsEditProfileModalOpen(false)}
+          onUpdate={handleUpdateProfile}
+        />
+      )}
     </div>
   );
 }
