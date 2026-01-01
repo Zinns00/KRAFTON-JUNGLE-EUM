@@ -9,8 +9,16 @@ import { useAudioDucking } from "./useAudioDucking";
 
 const WS_BASE_URL = process.env.NEXT_PUBLIC_VOICE_WS_URL || 'ws://localhost:8080/ws/audio';
 const SAMPLE_RATE = Number(process.env.NEXT_PUBLIC_AUDIO_SAMPLE_RATE) || 16000;
-const CHUNK_INTERVAL_MS = 1500;  // 1.5초 청크
+
+// 하이브리드 전송 설정: 침묵 감지 + 주기적 강제 전송 (오디오 손실 방지)
 const MIN_SAMPLES_TO_SEND = SAMPLE_RATE * 0.3;  // 최소 0.3초 이상의 오디오만 전송
+const MAX_BUFFER_DURATION_MS = 10000;  // 최대 10초 버퍼 (안전장치)
+const MAX_BUFFER_SAMPLES = SAMPLE_RATE * (MAX_BUFFER_DURATION_MS / 1000);
+const SILENCE_THRESHOLD = 0.005;  // 침묵 감지 RMS 임계값 (매우 민감하게)
+const SPEECH_THRESHOLD = 0.008;  // 발화 시작 감지 RMS 임계값 (낮게 설정)
+const SILENCE_DURATION_MS = 600;  // 600ms 침묵 = 발화 종료
+const FORCED_SEND_INTERVAL_MS = 3000;  // 3초마다 강제 전송 (오디오 손실 방지)
+const ANALYSIS_INTERVAL_MS = 50;  // 50ms마다 버퍼 분석
 
 export interface RemoteTranscriptData extends TranscriptData {
     participantId: string;
@@ -24,7 +32,6 @@ interface UseRemoteParticipantTranslationOptions {
     sourceLanguage?: TargetLanguage;  // 발화자가 말하는 언어 (기본: 'ko')
     targetLanguage?: TargetLanguage;  // 듣고 싶은 언어 (번역 대상)
     autoPlayTTS?: boolean;
-    chunkIntervalMs?: number;
     onTranscript?: (data: RemoteTranscriptData) => void;
     onError?: (error: Error) => void;
 }
@@ -36,8 +43,14 @@ interface ParticipantStream {
     sourceNode: MediaStreamAudioSourceNode | null;
     workletNode: AudioWorkletNode | null;
     audioBuffer: Float32Array[];
-    chunkInterval: NodeJS.Timeout | null;
+    analysisInterval: NodeJS.Timeout | null;
     isHandshakeComplete: boolean;
+    // 침묵 감지 관련 상태
+    isSpeaking: boolean;
+    silenceStartTime: number | null;
+    lastSpeechTime: number;
+    // 오디오 손실 방지를 위한 강제 전송 타이머
+    lastSendTime: number;
 }
 
 interface UseRemoteParticipantTranslationReturn {
@@ -81,6 +94,16 @@ function getParticipantProfileImg(participant: RemoteParticipant | LocalParticip
     return undefined;
 }
 
+// RMS 계산 (음성 활동 감지용)
+function calculateRMS(samples: Float32Array): number {
+    if (samples.length === 0) return 0;
+    let sum = 0;
+    for (let i = 0; i < samples.length; i++) {
+        sum += samples[i] * samples[i];
+    }
+    return Math.sqrt(sum / samples.length);
+}
+
 // Linear interpolation resampling
 function resample(inputBuffer: Float32Array, inputSampleRate: number, outputSampleRate: number): Float32Array {
     if (inputSampleRate === outputSampleRate) {
@@ -108,7 +131,6 @@ export function useRemoteParticipantTranslation({
     sourceLanguage = 'ko',  // 발화자가 말하는 언어 (기본: 한국어)
     targetLanguage = 'en',  // 듣고 싶은 언어 (기본: 영어)
     autoPlayTTS = true,
-    chunkIntervalMs = CHUNK_INTERVAL_MS,
     onTranscript,
     onError,
 }: UseRemoteParticipantTranslationOptions): UseRemoteParticipantTranslationReturn {
@@ -130,7 +152,6 @@ export function useRemoteParticipantTranslation({
     const sourceLanguageRef = useRef(sourceLanguage);
     const targetLanguageRef = useRef(targetLanguage);
     const autoPlayTTSRef = useRef(autoPlayTTS);
-    const chunkIntervalMsRef = useRef(chunkIntervalMs);
     const onTranscriptRef = useRef(onTranscript);
     const onErrorRef = useRef(onError);
     const localParticipantIdRef = useRef<string | null>(null);
@@ -170,7 +191,6 @@ export function useRemoteParticipantTranslation({
         sourceLanguageRef.current = sourceLanguage;
         targetLanguageRef.current = targetLanguage;
         autoPlayTTSRef.current = autoPlayTTS;
-        chunkIntervalMsRef.current = chunkIntervalMs;
         onTranscriptRef.current = onTranscript;
         onErrorRef.current = onError;
         duckParticipantRef.current = duckParticipant;
@@ -178,7 +198,7 @@ export function useRemoteParticipantTranslation({
         unduckAllRef.current = unduckAll;
         queueAudioRef.current = queueAudio;
         stopAudioRef.current = stopAudio;
-    }, [enabled, sttEnabled, sourceLanguage, targetLanguage, autoPlayTTS, chunkIntervalMs, onTranscript, onError, duckParticipant, unduckParticipant, unduckAll, queueAudio, stopAudio]);
+    }, [enabled, sttEnabled, sourceLanguage, targetLanguage, autoPlayTTS, onTranscript, onError, duckParticipant, unduckParticipant, unduckAll, queueAudio, stopAudio]);
 
     // Update local participant identity ref
     useEffect(() => {
@@ -216,8 +236,8 @@ export function useRemoteParticipantTranslation({
 
         console.log(`[RemoteTranslation] Cleaning up stream for ${participantId}`);
 
-        if (stream.chunkInterval) {
-            clearInterval(stream.chunkInterval);
+        if (stream.analysisInterval) {
+            clearInterval(stream.analysisInterval);
         }
 
         if (stream.workletNode) {
@@ -251,6 +271,40 @@ export function useRemoteParticipantTranslation({
         setTranscripts(new Map());
     };
 
+    // 버퍼된 오디오 전송 헬퍼 함수
+    const sendBufferedAudio = (stream: ParticipantStream, reason: string) => {
+        if (stream.audioBuffer.length === 0) return;
+        if (!stream.ws || stream.ws.readyState !== WebSocket.OPEN) return;
+        if (!stream.isHandshakeComplete) return;
+
+        const totalLength = stream.audioBuffer.reduce((sum, arr) => sum + arr.length, 0);
+        if (totalLength === 0) return;
+
+        // 최소 길이 검증
+        const resampledLength = Math.floor(totalLength * SAMPLE_RATE / stream.audioContext.sampleRate);
+        if (resampledLength < MIN_SAMPLES_TO_SEND) {
+            console.log(`[RemoteTranslation] ${stream.participantId}: Skipping short audio (${resampledLength} < ${MIN_SAMPLES_TO_SEND} samples)`);
+            stream.audioBuffer = [];
+            return;
+        }
+
+        // 버퍼 합치기
+        const combined = new Float32Array(totalLength);
+        let offset = 0;
+        for (const chunk of stream.audioBuffer) {
+            combined.set(chunk, offset);
+            offset += chunk.length;
+        }
+        stream.audioBuffer = [];
+
+        // 리샘플링 및 전송
+        const resampled = resample(combined, stream.audioContext.sampleRate, SAMPLE_RATE);
+        const int16Data = float32ToInt16(resampled);
+
+        stream.ws.send(int16Data.buffer);
+        console.log(`[RemoteTranslation] ${stream.participantId}: Sent ${int16Data.length} samples (${(int16Data.length / SAMPLE_RATE).toFixed(1)}s) - ${reason}`);
+    };
+
     const startAudioCapture = async (participantId: string, mediaStream: MediaStream) => {
         const stream = streamsRef.current.get(participantId);
         if (!stream || !stream.audioContext) return;
@@ -267,7 +321,7 @@ export function useRemoteParticipantTranslation({
             const workletNode = new AudioWorkletNode(stream.audioContext, 'audio-processor');
             stream.workletNode = workletNode;
 
-            // Handle audio data
+            // Handle audio data - 단순히 버퍼에 축적만 함
             workletNode.port.onmessage = (event) => {
                 const { audioData } = event.data;
                 if (audioData) {
@@ -278,39 +332,83 @@ export function useRemoteParticipantTranslation({
             // Connect (NOT to destination)
             sourceNode.connect(workletNode);
 
-            // Start chunk interval
-            stream.chunkInterval = setInterval(() => {
+            // 주기적 버퍼 분석 및 하이브리드 전송 (침묵 감지 + 강제 전송)
+            stream.analysisInterval = setInterval(() => {
                 if (stream.audioBuffer.length === 0) return;
                 if (!stream.ws || stream.ws.readyState !== WebSocket.OPEN) return;
                 if (!stream.isHandshakeComplete) return;
 
-                const totalLength = stream.audioBuffer.reduce((sum, arr) => sum + arr.length, 0);
-                if (totalLength === 0) return;
+                const now = Date.now();
 
-                const combined = new Float32Array(totalLength);
-                let offset = 0;
-                for (const chunk of stream.audioBuffer) {
-                    combined.set(chunk, offset);
-                    offset += chunk.length;
+                // 버퍼 전체의 RMS 계산 (최근 청크들만)
+                const recentChunks = stream.audioBuffer.slice(-5);  // 최근 5개 청크만 분석
+                const recentSamples: number[] = [];
+                for (const chunk of recentChunks) {
+                    for (let i = 0; i < chunk.length; i++) {
+                        recentSamples.push(chunk[i]);
+                    }
                 }
-                stream.audioBuffer = [];
+                const rms = calculateRMS(new Float32Array(recentSamples));
 
-                // Resample to 16kHz
-                const resampled = resample(combined, stream.audioContext.sampleRate, SAMPLE_RATE);
+                // 총 버퍼 크기
+                const totalSamples = stream.audioBuffer.reduce((sum, arr) => sum + arr.length, 0);
+                const resampledSamples = Math.floor(totalSamples * SAMPLE_RATE / stream.audioContext.sampleRate);
+                const timeSinceLastSend = now - stream.lastSendTime;
 
-                // 최소 샘플 수 검증 (너무 짧은 오디오는 전송하지 않음)
-                if (resampled.length < MIN_SAMPLES_TO_SEND) {
-                    console.log(`[RemoteTranslation] ${participantId}: Skipping short audio (${resampled.length} < ${MIN_SAMPLES_TO_SEND} samples)`);
-                    return;
+                // 발화 감지 상태 업데이트
+                if (rms >= SPEECH_THRESHOLD) {
+                    if (!stream.isSpeaking) {
+                        console.log(`[RemoteTranslation] ${participantId}: Speech detected (RMS: ${rms.toFixed(4)})`);
+                    }
+                    stream.isSpeaking = true;
+                    stream.silenceStartTime = null;
+                    stream.lastSpeechTime = now;
+                } else if (rms < SILENCE_THRESHOLD) {
+                    if (stream.isSpeaking && stream.silenceStartTime === null) {
+                        stream.silenceStartTime = now;
+                    }
                 }
 
-                const int16Data = float32ToInt16(resampled);
+                // ============================================
+                // 전송 조건 (우선순위 순, 오디오 손실 방지)
+                // ============================================
 
-                stream.ws.send(int16Data.buffer);
-                console.log(`[RemoteTranslation] ${participantId}: Sent ${int16Data.length} samples (${(int16Data.length / SAMPLE_RATE).toFixed(1)}s)`);
-            }, chunkIntervalMsRef.current);
+                let shouldSend = false;
+                let sendReason = '';
 
-            console.log(`[RemoteTranslation] ${participantId}: Audio capture started`);
+                // 1. 발화 후 침묵 감지 → 즉시 전송 (가장 빠른 응답)
+                if (stream.isSpeaking && stream.silenceStartTime !== null) {
+                    const silenceDuration = now - stream.silenceStartTime;
+                    if (silenceDuration >= SILENCE_DURATION_MS && resampledSamples >= MIN_SAMPLES_TO_SEND) {
+                        shouldSend = true;
+                        sendReason = `utterance complete (silence: ${silenceDuration}ms)`;
+                        stream.isSpeaking = false;
+                        stream.silenceStartTime = null;
+                    }
+                }
+
+                // 2. 강제 전송 간격 초과 → 무조건 전송 (오디오 손실 방지)
+                if (!shouldSend && timeSinceLastSend >= FORCED_SEND_INTERVAL_MS && resampledSamples >= MIN_SAMPLES_TO_SEND) {
+                    shouldSend = true;
+                    sendReason = `forced send (${(timeSinceLastSend / 1000).toFixed(1)}s elapsed)`;
+                }
+
+                // 3. 최대 버퍼 크기 초과 → 강제 전송 (메모리 보호)
+                if (!shouldSend && resampledSamples >= MAX_BUFFER_SAMPLES) {
+                    shouldSend = true;
+                    sendReason = `buffer full (${resampledSamples} samples)`;
+                    stream.isSpeaking = false;
+                    stream.silenceStartTime = null;
+                }
+
+                // 전송 실행
+                if (shouldSend) {
+                    sendBufferedAudio(stream, sendReason);
+                    stream.lastSendTime = now;
+                }
+            }, ANALYSIS_INTERVAL_MS);
+
+            console.log(`[RemoteTranslation] ${participantId}: Audio capture started (hybrid mode: silence detection + forced ${FORCED_SEND_INTERVAL_MS}ms)`);
 
         } catch (err) {
             console.error(`[RemoteTranslation] ${participantId}: Failed to start audio capture:`, err);
@@ -382,8 +480,14 @@ export function useRemoteParticipantTranslation({
                 sourceNode: null,
                 workletNode: null,
                 audioBuffer: [],
-                chunkInterval: null,
+                analysisInterval: null,
                 isHandshakeComplete: false,
+                // 침묵 감지 상태 초기화
+                isSpeaking: false,
+                silenceStartTime: null,
+                lastSpeechTime: Date.now(),
+                // 강제 전송 타이머 초기화
+                lastSendTime: Date.now(),
             };
 
             streamsRef.current.set(participantId, stream);

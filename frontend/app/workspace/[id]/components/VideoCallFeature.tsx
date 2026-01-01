@@ -141,7 +141,6 @@ function VideoCallContent({
         sourceLanguage,              // 발화자가 말하는 언어
         targetLanguage,              // 듣고 싶은 언어
         autoPlayTTS: true,
-        chunkIntervalMs: 1500,
         onTranscript: handleTranscript,
     });
 
