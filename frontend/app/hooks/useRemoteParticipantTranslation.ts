@@ -178,10 +178,16 @@ export function useRemoteParticipantTranslation({
 
     // Update local participant identity ref
     useEffect(() => {
-        if (localParticipant) {
+        if (localParticipant?.identity) {
+            console.log(`[RemoteTranslation] Local participant identified: ${localParticipant.identity}`);
             localParticipantIdRef.current = localParticipant.identity;
+        } else {
+            console.log(`[RemoteTranslation] Local participant not ready yet:`, {
+                localParticipant: !!localParticipant,
+                identity: localParticipant?.identity,
+            });
         }
-    }, [localParticipant]);
+    }, [localParticipant, localParticipant?.identity]);
 
     // Memoize participant IDs for stable comparison
     const participantIds = useMemo(
@@ -468,11 +474,17 @@ export function useRemoteParticipantTranslation({
 
     // Main effect: Manage streams based on sttEnabled, participant changes, and language changes
     useEffect(() => {
+        // Get local participant ID directly from the hook (more reliable than ref)
+        const localId = localParticipant?.identity;
+
         // Wait for local participant to be identified
-        if (!localParticipantIdRef.current) {
+        if (!localId) {
             console.log(`[RemoteTranslation] Waiting for local participant to be identified...`);
             return;
         }
+
+        // Update ref for use in other functions
+        localParticipantIdRef.current = localId;
 
         if (!sttEnabled) {
             console.log(`[RemoteTranslation] Stopping STT`);
@@ -499,7 +511,6 @@ export function useRemoteParticipantTranslation({
 
         // Parse participant IDs from the memoized string
         const currentIds = participantIds ? participantIds.split(',').filter(Boolean) : [];
-        const localId = localParticipantIdRef.current;
 
         // Count remote participants only (exclude local)
         const remoteIds = currentIds.filter(id => id !== localId);
@@ -538,9 +549,9 @@ export function useRemoteParticipantTranslation({
                 cleanupAllStreams();
             }
         };
-    // Depend on sttEnabled, participantIds, language changes, and localParticipant
+    // Depend on sttEnabled, participantIds, language changes, and localParticipant identity
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [sttEnabled, participantIds, sourceLanguage, targetLanguage, localParticipant]);
+    }, [sttEnabled, participantIds, sourceLanguage, targetLanguage, localParticipant?.identity]);
 
     // Cleanup on unmount
     useEffect(() => {
