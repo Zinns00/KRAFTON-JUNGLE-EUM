@@ -11,7 +11,7 @@ const WS_BASE_URL = process.env.NEXT_PUBLIC_VOICE_WS_URL || 'ws://localhost:8080
 const SAMPLE_RATE = Number(process.env.NEXT_PUBLIC_AUDIO_SAMPLE_RATE) || 16000;
 
 // 하이브리드 전송 설정: 침묵 감지 + 주기적 강제 전송 (오디오 손실 방지)
-const MIN_SAMPLES_TO_SEND = SAMPLE_RATE * 0.3;  // 최소 0.3초 이상의 오디오만 전송
+const MIN_SAMPLES_TO_SEND = 0;  // 모든 오디오 전송 (스킵 없음)
 const MAX_BUFFER_DURATION_MS = 10000;  // 최대 10초 버퍼 (안전장치)
 const MAX_BUFFER_SAMPLES = SAMPLE_RATE * (MAX_BUFFER_DURATION_MS / 1000);
 const SILENCE_THRESHOLD = 0.005;  // 침묵 감지 RMS 임계값 (매우 민감하게)
@@ -280,14 +280,6 @@ export function useRemoteParticipantTranslation({
         const totalLength = stream.audioBuffer.reduce((sum, arr) => sum + arr.length, 0);
         if (totalLength === 0) return;
 
-        // 최소 길이 검증
-        const resampledLength = Math.floor(totalLength * SAMPLE_RATE / stream.audioContext.sampleRate);
-        if (resampledLength < MIN_SAMPLES_TO_SEND) {
-            console.log(`[RemoteTranslation] ${stream.participantId}: Skipping short audio (${resampledLength} < ${MIN_SAMPLES_TO_SEND} samples)`);
-            stream.audioBuffer = [];
-            return;
-        }
-
         // 버퍼 합치기
         const combined = new Float32Array(totalLength);
         let offset = 0;
@@ -379,7 +371,7 @@ export function useRemoteParticipantTranslation({
                 // 1. 발화 후 침묵 감지 → 즉시 전송 (가장 빠른 응답)
                 if (stream.isSpeaking && stream.silenceStartTime !== null) {
                     const silenceDuration = now - stream.silenceStartTime;
-                    if (silenceDuration >= SILENCE_DURATION_MS && resampledSamples >= MIN_SAMPLES_TO_SEND) {
+                    if (silenceDuration >= SILENCE_DURATION_MS) {
                         shouldSend = true;
                         sendReason = `utterance complete (silence: ${silenceDuration}ms)`;
                         stream.isSpeaking = false;
@@ -388,7 +380,7 @@ export function useRemoteParticipantTranslation({
                 }
 
                 // 2. 강제 전송 간격 초과 → 무조건 전송 (오디오 손실 방지)
-                if (!shouldSend && timeSinceLastSend >= FORCED_SEND_INTERVAL_MS && resampledSamples >= MIN_SAMPLES_TO_SEND) {
+                if (!shouldSend && timeSinceLastSend >= FORCED_SEND_INTERVAL_MS) {
                     shouldSend = true;
                     sendReason = `forced send (${(timeSinceLastSend / 1000).toFixed(1)}s elapsed)`;
                 }

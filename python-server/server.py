@@ -677,16 +677,11 @@ class ConversationServicer(conversation_pb2_grpc.ConversationServiceServicer):
         오디오 버퍼 처리 및 응답 생성
 
         Note: LiveKit에서 이미 오디오를 처리하므로 VAD 필터링 없이 바로 처리
+        모든 오디오를 처리 (짧은 오디오도 스킵하지 않음)
 
         Yields:
             ChatResponse 메시지들
         """
-        # 최소 오디오 길이 검증 (0.3초 이상)
-        min_bytes = int(Config.BYTES_PER_SECOND * 0.3)
-        if len(audio_bytes) < min_bytes:
-            print(f"[Audio] Skipped (too short): {len(audio_bytes)} < {min_bytes} bytes")
-            return
-
         audio_duration = len(audio_bytes) / Config.BYTES_PER_SECOND
         print(f"[Audio] Processing {len(audio_bytes)} bytes ({audio_duration:.1f}s)")
 
