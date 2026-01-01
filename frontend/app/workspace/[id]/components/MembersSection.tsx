@@ -1,13 +1,16 @@
 "use client";
 
-import { useState } from "react";
-import { Workspace } from "../../../lib/api";
+import { useState, useEffect, useCallback } from "react";
+import { Workspace, apiClient } from "../../../lib/api";
 import { filterActiveMembers } from "../../../lib/utils";
 import InviteMemberModal from "./InviteMemberModal";
+import { useAuth } from "../../../lib/auth-context";
+import { usePermission } from "../../../hooks/usePermission";
 
 interface MembersSectionProps {
   workspace: Workspace;
   onMembersUpdate?: () => void;
+  onSectionChange: (section: string) => void;
 }
 
 const roleLabels: Record<string, string> = {
@@ -16,9 +19,40 @@ const roleLabels: Record<string, string> = {
   member: "멤버",
 };
 
-export default function MembersSection({ workspace, onMembersUpdate }: MembersSectionProps) {
+export default function MembersSection({ workspace, onMembersUpdate, onSectionChange }: MembersSectionProps) {
+  const { user } = useAuth();
   const [searchQuery, setSearchQuery] = useState("");
   const [showInviteModal, setShowInviteModal] = useState(false);
+  const [unreadCounts, setUnreadCounts] = useState<Record<number, number>>({});
+
+  const canManageMembers = usePermission(workspace, "MANAGE_MEMBERS");
+
+  const fetchUnreadCounts = useCallback(async () => {
+    try {
+      const dms = await apiClient.getMyDMs(workspace.id);
+      const counts: Record<number, number> = {};
+      if (dms) {
+        dms.forEach((dm) => {
+          counts[dm.target_user.id] = dm.unread_count;
+        });
+      }
+      setUnreadCounts(counts);
+    } catch (e) {
+      console.error("Failed to fetch unread counts:", e);
+    }
+  }, [workspace.id]);
+
+  useEffect(() => {
+    fetchUnreadCounts();
+  }, [fetchUnreadCounts]);
+
+  // 주기적으로 안읽음 개수 갱신 (3초마다)
+  useEffect(() => {
+    const interval = setInterval(fetchUnreadCounts, 3000);
+    return () => clearInterval(interval);
+  }, [fetchUnreadCounts]);
+
+
 
   // 워크스페이스 멤버 목록 변환 (ACTIVE 멤버만 표시)
   const members = filterActiveMembers(workspace.members || []).map((m) => ({
@@ -29,6 +63,7 @@ export default function MembersSection({ workspace, onMembersUpdate }: MembersSe
     profileImg: m.user?.profile_img,
     isOwner: m.user_id === workspace.owner_id,
     joinedAt: m.joined_at,
+    role: m.role,
   }));
 
   const filteredMembers = members.filter((member) => {
@@ -50,6 +85,42 @@ export default function MembersSection({ workspace, onMembersUpdate }: MembersSe
     if (onMembersUpdate) {
       onMembersUpdate();
     }
+    setShowInviteModal(false);
+  };
+
+  const handleStartDM = async (targetUserId: number) => {
+    try {
+      // Optimistically clear badge for this user
+      setUnreadCounts(prev => ({ ...prev, [targetUserId]: 0 }));
+
+      // API 호출
+      const { id } = await apiClient.getOrCreateDMRoom(workspace.id, targetUserId);
+
+      // 섹션 변경 (채팅방으로 이동)
+      onSectionChange(`dm-${id}`);
+
+      // Refetch unread counts after a short delay
+      setTimeout(fetchUnreadCounts, 500);
+    } catch (error) {
+      console.error("Failed to start DM:", error);
+      alert("DM 방을 생성할 수 없습니다.");
+      fetchUnreadCounts(); // Revert optimistic update
+    }
+  };
+
+  const handleKickMember = async (userId: number, nickname: string) => {
+    if (!confirm(`${nickname}님을 워크스페이스에서 강퇴하시겠습니까?`)) return;
+
+    try {
+      await apiClient.kickMember(workspace.id, userId);
+      // 멤버 목록 새로고침
+      if (onMembersUpdate) {
+        onMembersUpdate();
+      }
+    } catch (error) {
+      console.error("Failed to kick member:", error);
+      alert("멤버 강퇴에 실패했습니다.");
+    }
   };
 
   return (
@@ -63,16 +134,17 @@ export default function MembersSection({ workspace, onMembersUpdate }: MembersSe
               {members.length}명의 멤버
             </p>
           </div>
-          <button
-            onClick={() => setShowInviteModal(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-black text-white text-sm font-medium rounded-lg hover:bg-black/80 transition-colors"
-          >
-
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-            </svg>
-            멤버 초대
-          </button>
+          {canManageMembers && (
+            <button
+              onClick={() => setShowInviteModal(true)}
+              className="flex items-center gap-2 px-4 py-2 bg-black text-white text-sm font-medium rounded-lg hover:bg-black/80 transition-colors"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+              </svg>
+              멤버 초대
+            </button>
+          )}
         </div>
 
         {/* Search */}
@@ -122,31 +194,64 @@ export default function MembersSection({ workspace, onMembersUpdate }: MembersSe
                 )}
               </div>
 
-              {/* Info */}
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
                   <span className="font-medium text-black">{member.name}</span>
-                  {member.isOwner && (
+                  {member.isOwner ? (
                     <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">
                       {roleLabels.owner}
                     </span>
-                  )}
+                  ) : member.role ? (
+                    <span
+                      className="text-[10px] font-medium px-1.5 py-0.5 rounded"
+                      style={{
+                        backgroundColor: member.role.color ? `${member.role.color}20` : '#F3F4F6',
+                        color: member.role.color || '#4B5563'
+                      }}
+                    >
+                      {member.role.name}
+                    </span>
+                  ) : null}
                 </div>
                 <p className="text-sm text-black/40 truncate">{member.email}</p>
               </div>
 
               {/* Actions */}
-              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                <button className="p-2 rounded-lg hover:bg-black/5 text-black/40 hover:text-black/70 transition-colors">
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                  </svg>
-                </button>
-                <button className="p-2 rounded-lg hover:bg-black/5 text-black/40 hover:text-black/70 transition-colors">
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
-                  </svg>
-                </button>
+              <div className="flex items-center gap-1 transition-opacity">
+
+                {/* DM Button */}
+                {user && member.userId !== user.id && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleStartDM(member.userId);
+                    }}
+                    className="p-2 rounded-lg hover:bg-black/5 text-black/40 hover:text-blue-500 transition-colors relative"
+                    title="DM 보내기"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                    </svg>
+                    {unreadCounts[member.userId] > 0 && (
+                      <span className="absolute top-1 right-1 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-white"></span>
+                    )}
+                  </button>
+                )}
+                {/* Kick Button */}
+                {canManageMembers && !member.isOwner && member.userId !== user?.id && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleKickMember(member.userId, member.name);
+                    }}
+                    className="p-2 rounded-lg hover:bg-red-50 text-black/20 hover:text-red-500 transition-colors"
+                    title="멤버 강퇴"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                  </button>
+                )}
               </div>
             </div>
           ))}
@@ -160,17 +265,18 @@ export default function MembersSection({ workspace, onMembersUpdate }: MembersSe
             </div>
           )}
         </div>
-      </div>
+      </div >
 
       {/* Invite Modal */}
-      <InviteMemberModal
+      < InviteMemberModal
         workspaceId={workspace.id}
         workspaceName={workspace.name}
         currentMembers={members.map(m => m.userId)}
         isOpen={showInviteModal}
-        onClose={() => setShowInviteModal(false)}
+        onClose={() => setShowInviteModal(false)
+        }
         onSuccess={handleInviteSuccess}
       />
-    </div>
+    </div >
   );
 }
