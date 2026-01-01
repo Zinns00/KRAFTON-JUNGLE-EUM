@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"sync"
+	"time"
 
 	"realtime-backend/internal/config"
 
@@ -77,8 +78,26 @@ func NewVoiceParticipantsWSHandler(cfg *config.Config) *VoiceParticipantsWSHandl
 
 // HandleWebSocket WebSocket 연결 처리
 func (h *VoiceParticipantsWSHandler) HandleWebSocket(c *websocket.Conn) {
-	workspaceID := c.Locals("workspaceId").(int64)
-	userID := c.Locals("userId").(int64)
+	// 패닉 복구 - 어떤 상황에서도 서버가 죽지 않도록
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("음성 참가자 WebSocket 패닉 복구: %v", r)
+		}
+	}()
+
+	// 안전한 type assertion
+	workspaceID, ok := c.Locals("workspaceId").(int64)
+	if !ok {
+		log.Printf("음성 참가자 WebSocket: workspaceId 타입 오류")
+		c.Close()
+		return
+	}
+	userID, ok := c.Locals("userId").(int64)
+	if !ok {
+		log.Printf("음성 참가자 WebSocket: userId 타입 오류")
+		c.Close()
+		return
+	}
 
 	// 클라이언트 등록
 	h.mu.Lock()
@@ -140,8 +159,30 @@ func (h *VoiceParticipantsWSHandler) HandleWebSocket(c *websocket.Conn) {
 
 // sendInitialParticipants 연결 시 현재 참가자 목록 전송
 func (h *VoiceParticipantsWSHandler) sendInitialParticipants(c *websocket.Conn, workspaceID int64) {
+	// 패닉 복구
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("초기 참가자 전송 패닉 복구: %v", r)
+		}
+	}()
+
+	// 연결 상태 확인
+	if c == nil {
+		log.Printf("WebSocket 연결이 nil입니다")
+		return
+	}
+
 	if h.cfg == nil {
 		log.Printf("Config not set for VoiceParticipantsWSHandler")
+		// config가 없어도 빈 목록 전송
+		h.sendEmptyParticipants(c)
+		return
+	}
+
+	// LiveKit 설정 확인
+	if h.cfg.LiveKit.Host == "" || h.cfg.LiveKit.APIKey == "" || h.cfg.LiveKit.APISecret == "" {
+		log.Printf("LiveKit 설정이 완전하지 않습니다")
+		h.sendEmptyParticipants(c)
 		return
 	}
 
@@ -152,27 +193,25 @@ func (h *VoiceParticipantsWSHandler) sendInitialParticipants(c *websocket.Conn, 
 		h.cfg.LiveKit.APISecret,
 	)
 
-	ctx := context.Background()
+	// 타임아웃 설정 (5초)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
 	// 워크스페이스의 모든 방 목록 조회
 	listRes, err := roomClient.ListRooms(ctx, &livekit.ListRoomsRequest{})
 	if err != nil {
 		log.Printf("방 목록 조회 실패: %v", err)
+		h.sendEmptyParticipants(c)
 		return
 	}
 
 	result := make(map[string][]VoiceParticipantInfo)
 
 	// 워크스페이스에 해당하는 방만 필터링
-	prefix := "workspace-" + string(rune(workspaceID+'0')) + "-"
-	// 더 안전한 prefix 생성
-	prefixBytes := []byte("workspace-")
-	prefixBytes = append(prefixBytes, []byte(intToString(workspaceID))...)
-	prefixBytes = append(prefixBytes, '-')
-	prefix = string(prefixBytes)
+	prefix := "workspace-" + intToString(workspaceID) + "-"
 
 	for _, room := range listRes.Rooms {
-		if !hasPrefix(room.Name, prefix) {
+		if room == nil || !hasPrefix(room.Name, prefix) {
 			continue
 		}
 
@@ -185,8 +224,16 @@ func (h *VoiceParticipantsWSHandler) sendInitialParticipants(c *websocket.Conn, 
 			continue
 		}
 
+		if participantsRes == nil {
+			result[room.Name] = []VoiceParticipantInfo{}
+			continue
+		}
+
 		participants := make([]VoiceParticipantInfo, 0, len(participantsRes.Participants))
 		for _, p := range participantsRes.Participants {
+			if p == nil {
+				continue
+			}
 			var metadata ParticipantMetadata
 			if p.Metadata != "" {
 				json.Unmarshal([]byte(p.Metadata), &metadata)
@@ -217,6 +264,23 @@ func (h *VoiceParticipantsWSHandler) sendInitialParticipants(c *websocket.Conn, 
 		return
 	}
 
+	if err := c.WriteMessage(websocket.TextMessage, msgBytes); err != nil {
+		log.Printf("초기 참가자 목록 전송 실패: %v", err)
+	}
+}
+
+// sendEmptyParticipants 빈 참가자 목록 전송
+func (h *VoiceParticipantsWSHandler) sendEmptyParticipants(c *websocket.Conn) {
+	msg := VoiceParticipantWSMessage{
+		Type: "connected",
+		Payload: ConnectedPayload{
+			Participants: make(map[string][]VoiceParticipantInfo),
+		},
+	}
+	msgBytes, err := json.Marshal(msg)
+	if err != nil {
+		return
+	}
 	c.WriteMessage(websocket.TextMessage, msgBytes)
 }
 
@@ -258,6 +322,13 @@ func (h *VoiceParticipantsWSHandler) BroadcastParticipantLeave(workspaceID int64
 
 // broadcastToWorkspace 워크스페이스의 모든 클라이언트에 브로드캐스트
 func (h *VoiceParticipantsWSHandler) broadcastToWorkspace(workspaceID int64, msg VoiceParticipantWSMessage, exclude *websocket.Conn) {
+	// 패닉 복구
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("브로드캐스트 패닉 복구: %v", r)
+		}
+	}()
+
 	msgBytes, err := json.Marshal(msg)
 	if err != nil {
 		log.Printf("메시지 직렬화 실패: %v", err)
@@ -265,15 +336,24 @@ func (h *VoiceParticipantsWSHandler) broadcastToWorkspace(workspaceID int64, msg
 	}
 
 	h.mu.RLock()
-	defer h.mu.RUnlock()
-
 	connections := h.clients[workspaceID]
 	if len(connections) == 0 {
+		h.mu.RUnlock()
 		return
 	}
 
+	// 연결 목록 복사 (락을 빨리 해제하기 위해)
+	connList := make([]*websocket.Conn, 0, len(connections))
 	for conn := range connections {
-		if conn == exclude {
+		if conn != exclude {
+			connList = append(connList, conn)
+		}
+	}
+	h.mu.RUnlock()
+
+	// 복사된 목록으로 브로드캐스트
+	for _, conn := range connList {
+		if conn == nil {
 			continue
 		}
 		if err := conn.WriteMessage(websocket.TextMessage, msgBytes); err != nil {

@@ -52,6 +52,13 @@ func (h *AudioHandler) Close() error {
 
 // HandleWebSocket 오디오 스트리밍 WebSocket 연결 처리
 func (h *AudioHandler) HandleWebSocket(c *websocket.Conn) {
+	// 패닉 복구 - 서버 크래시 방지
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("오디오 WebSocket 패닉 복구: %v", r)
+		}
+	}()
+
 	// 세션 초기화
 	sess := session.New(h.cfg.Audio.ChannelBufferSize)
 
