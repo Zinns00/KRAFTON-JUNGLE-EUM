@@ -484,9 +484,9 @@ function ControlBarComponent({
                     {/* 언어 선택 드롭다운 */}
                     {showLanguageMenu && (
                         <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 bg-white rounded-xl shadow-lg border border-black/10 py-1 min-w-[200px] z-50">
-                            {/* 내가 말하는 언어 */}
+                            {/* 음성 인식 언어 (상대방이 말하는 언어) */}
                             <div className="px-3 py-1.5 text-[10px] text-black/40 uppercase tracking-wide">
-                                내가 말하는 언어
+                                🎤 음성 인식 (상대방)
                             </div>
                             {SUPPORTED_LANGUAGES.map((lang) => (
                                 <button
@@ -510,9 +510,9 @@ function ControlBarComponent({
 
                             <div className="border-t border-black/10 my-1" />
 
-                            {/* 번역될 언어 */}
+                            {/* 번역 출력 언어 (내가 듣고 싶은 언어) */}
                             <div className="px-3 py-1.5 text-[10px] text-black/40 uppercase tracking-wide">
-                                번역될 언어
+                                🔊 번역 출력 (나)
                             </div>
                             {SUPPORTED_LANGUAGES.map((lang) => (
                                 <button

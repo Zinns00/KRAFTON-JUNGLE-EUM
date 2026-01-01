@@ -564,9 +564,12 @@ class ConversationServicer(conversation_pb2_grpc.ConversationServiceServicer):
                     target_langs = session_state.get_target_languages()
 
                     print(f"[Session Init] {current_session_id[:8]}...")
-                    print(f"  Speaker: {speaker.nickname} ({speaker.source_language})")
-                    print(f"  Targets: {target_langs}")
+                    print(f"  Speaker: {speaker.nickname} (speaks: {speaker.source_language})")
+                    print(f"  Participants: {[(p.nickname, p.target_language) for p in session_state.participants.values()]}")
+                    print(f"  Targets to translate: {target_langs}")
                     print(f"  Strategy: {strategy_name}")
+                    if not target_langs:
+                        print(f"  ⚠️ WARNING: No translation targets! sourceLang={speaker.source_language}, check participant targetLanguages")
 
                     # Ready 상태 전송
                     yield conversation_pb2.ChatResponse(

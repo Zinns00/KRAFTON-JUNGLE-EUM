@@ -298,13 +298,24 @@ export function useRemoteParticipantTranslation({
         if (!participant) return;
 
         const participantId = participant.identity;
-        const isLocal = participantId === localParticipantIdRef.current;
+
+        // 로컬 참가자 체크 (두 가지 방법으로 확인)
+        const isLocalByIdentity = participantId === localParticipantIdRef.current;
+        const isLocalByProperty = 'isLocal' in participant && participant.isLocal === true;
+
+        console.log(`[RemoteTranslation] Checking participant: ${participantId}`, {
+            isLocalByIdentity,
+            isLocalByProperty,
+            myIdentity: localParticipantIdRef.current,
+        });
 
         // Skip local participant - we only translate remote participants
-        if (isLocal) {
-            console.log(`[RemoteTranslation] Skipping local participant: ${participantId}`);
+        if (isLocalByIdentity || isLocalByProperty) {
+            console.log(`[RemoteTranslation] ❌ Skipping LOCAL participant: ${participantId}`);
             return;
         }
+
+        console.log(`[RemoteTranslation] ✓ Processing REMOTE participant: ${participantId}`);
 
         // Check if already exists
         if (streamsRef.current.has(participantId)) {
@@ -318,6 +329,16 @@ export function useRemoteParticipantTranslation({
             console.log(`[RemoteTranslation] ${participantId}: No microphone track available`);
             return;
         }
+
+        // Debug: 트랙 정보 확인
+        console.log(`[RemoteTranslation] ${participantId}: Track info:`, {
+            participantIdentity: participant.identity,
+            participantIsLocal: 'isLocal' in participant ? (participant as any).isLocal : 'N/A',
+            trackSid: micPub.trackSid,
+            trackSource: micPub.source,
+            isSubscribed: micPub.isSubscribed,
+            isEnabled: micPub.isEnabled,
+        });
 
         try {
             console.log(`[RemoteTranslation] Creating stream for ${participantId}`);
@@ -447,6 +468,12 @@ export function useRemoteParticipantTranslation({
 
     // Main effect: Manage streams based on sttEnabled, participant changes, and language changes
     useEffect(() => {
+        // Wait for local participant to be identified
+        if (!localParticipantIdRef.current) {
+            console.log(`[RemoteTranslation] Waiting for local participant to be identified...`);
+            return;
+        }
+
         if (!sttEnabled) {
             console.log(`[RemoteTranslation] Stopping STT`);
             cleanupAllStreams();
@@ -472,10 +499,11 @@ export function useRemoteParticipantTranslation({
 
         // Parse participant IDs from the memoized string
         const currentIds = participantIds ? participantIds.split(',').filter(Boolean) : [];
+        const localId = localParticipantIdRef.current;
 
         // Count remote participants only (exclude local)
-        const remoteCount = currentIds.filter(id => id !== localParticipantIdRef.current).length;
-        console.log(`[RemoteTranslation] STT enabled, managing ${remoteCount} remote participants`);
+        const remoteIds = currentIds.filter(id => id !== localId);
+        console.log(`[RemoteTranslation] Local: ${localId}, Remote participants: [${remoteIds.join(', ')}]`);
         setIsActive(true);
 
         const currentParticipantIds = new Set(currentIds);
@@ -484,12 +512,12 @@ export function useRemoteParticipantTranslation({
         // Find REMOTE participants to add (exclude local participant)
         const participantsToAdd = participants.filter(p =>
             !existingStreamIds.has(p.identity) &&
-            p.identity !== localParticipantIdRef.current
+            p.identity !== localId
         );
 
         // Add new remote participants only
         participantsToAdd.forEach(participant => {
-            console.log(`[RemoteTranslation] Creating stream for REMOTE: ${participant.identity}`);
+            console.log(`[RemoteTranslation] Creating stream for REMOTE: ${participant.identity} (I am: ${localId})`);
             createParticipantStream(participant as RemoteParticipant);
         });
 
@@ -501,7 +529,7 @@ export function useRemoteParticipantTranslation({
             }
         });
 
-        setActiveParticipantCount(remoteCount);
+        setActiveParticipantCount(remoteIds.length);
 
         // Cleanup on unmount or when sttEnabled changes
         return () => {
@@ -510,9 +538,9 @@ export function useRemoteParticipantTranslation({
                 cleanupAllStreams();
             }
         };
-    // Depend on sttEnabled, participantIds, and language changes
+    // Depend on sttEnabled, participantIds, language changes, and localParticipant
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [sttEnabled, participantIds, sourceLanguage, targetLanguage]);
+    }, [sttEnabled, participantIds, sourceLanguage, targetLanguage, localParticipant]);
 
     // Cleanup on unmount
     useEffect(() => {
