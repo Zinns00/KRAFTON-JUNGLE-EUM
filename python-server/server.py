@@ -55,7 +55,7 @@ class Config:
     SENTENCE_MAX_BYTES = int(BYTES_PER_SECOND * SENTENCE_MAX_DURATION_MS / 1000)
 
     # VAD settings
-    SILENCE_THRESHOLD_RMS = 150  # RMS 침묵 임계값 (낮출수록 더 민감하게 음성 감지)
+    SILENCE_THRESHOLD_RMS = 50  # RMS 침묵 임계값 (낮출수록 더 민감하게 음성 감지)
     SILENCE_DURATION_MS = 700    # 문장 끝 감지용 침묵 지속 시간
     SILENCE_FRAMES = int(SILENCE_DURATION_MS / 100)  # 100ms 프레임 기준
 

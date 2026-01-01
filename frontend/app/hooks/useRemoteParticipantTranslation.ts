@@ -412,11 +412,12 @@ export function useRemoteParticipantTranslation({
                         console.error(`[RemoteTranslation] ${participantId}: Failed to parse message:`, e);
                     }
                 } else if (event.data instanceof ArrayBuffer) {
-                    // TTS audio - only play when translation mode is enabled AND not for local participant
-                    console.log(`[RemoteTranslation] ${participantId}: Received TTS audio:`, event.data.byteLength, "bytes");
+                    // TTS audio (MP3 format) - only play when translation mode is enabled AND not for local participant
+                    console.log(`[RemoteTranslation] ${participantId}: Received TTS audio (MP3):`, event.data.byteLength, "bytes");
                     const currentIsLocal = participantId === localParticipantIdRef.current;
                     if (autoPlayTTSRef.current && enabledRef.current && !currentIsLocal) {
-                        queueAudioRef.current(event.data, 24000, participantId);
+                        // Don't pass sampleRate to use MP3 decoding instead of PCM
+                        queueAudioRef.current(event.data, undefined, participantId);
                     } else if (currentIsLocal) {
                         console.log(`[RemoteTranslation] ${participantId}: Skipping TTS for local participant`);
                     }
