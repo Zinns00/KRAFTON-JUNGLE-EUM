@@ -87,7 +87,6 @@ func (h *ChatWSHandler) HandleWebSocket(c *websocket.Conn) {
 			log.Printf("채팅 WebSocket 패닉 복구: %v", r)
 		}
 	}()
-
 	// 쿼리 파라미터에서 정보 추출 (안전한 타입 변환)
 	roomIDInterface := c.Locals("roomId")
 	userIDInterface := c.Locals("userId")
