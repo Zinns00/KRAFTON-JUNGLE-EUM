@@ -402,18 +402,16 @@ func (h *AudioHandler) aiUnifiedWorker(sess *session.Session) {
 			if !ok {
 				return
 			}
-			log.Printf("🔊 [%s] AI Audio received: lang=%s, size=%d bytes",
-				sess.ID, audioMsg.TargetLanguage, len(audioMsg.AudioData))
+			log.Printf("🔊 [%s] AI Audio received: lang=%s, speaker=%s, size=%d bytes",
+				sess.ID, audioMsg.TargetLanguage, audioMsg.SpeakerParticipantID, len(audioMsg.AudioData))
 
-			// Self-mute: 자신이 말한 것의 TTS는 재생하지 않음
-			if audioMsg.SpeakerParticipantID == sess.GetParticipantID() {
-				log.Printf("🔇 [%s] Self-mute: skipping TTS for own speech", sess.ID)
-				continue
-			}
+			// Self-mute는 프론트엔드에서 처리 (useRemoteParticipantTranslation.ts)
+			// 백엔드는 모든 TTS 오디오를 전송
 
 			// AI 응답 오디오 → 에코 채널 (Non-blocking)
 			select {
 			case sess.EchoPackets <- audioMsg.AudioData:
+				log.Printf("🔊 [%s] TTS audio sent to WebSocket", sess.ID)
 			default:
 				log.Printf("⚠️ [%s] Echo buffer full, dropping AI audio response", sess.ID)
 			}

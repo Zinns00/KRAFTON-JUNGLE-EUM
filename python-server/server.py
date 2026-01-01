@@ -69,7 +69,7 @@ class Config:
     WHISPER_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
     WHISPER_COMPUTE_TYPE = "float16" if torch.cuda.is_available() else "int8"
 
-    LLM_MODEL = os.getenv("LLM_MODEL", "Qwen/Qwen3-4B")
+    LLM_MODEL = os.getenv("LLM_MODEL", "Qwen/Qwen3-8B")
 
     # AWS Polly
     AWS_REGION = os.getenv("AWS_REGION", "ap-northeast-2")
@@ -305,13 +305,16 @@ class ModelManager:
         print(f"[2/3] Loading LLM {Config.LLM_MODEL}...")
         if VLLM_AVAILABLE and Config.WHISPER_DEVICE == "cuda":
             # vLLM for efficient GPU inference
+            # Qwen3-8B: ~16GB at FP16, Whisper large-v3: ~3GB
+            # A10G has 24GB, so we use 0.65 utilization for LLM
             self.llm = LLM(
                 model=Config.LLM_MODEL,
                 trust_remote_code=True,
                 max_model_len=2048,
-                gpu_memory_utilization=0.6,
-                max_num_seqs=64,
+                gpu_memory_utilization=0.65,
+                max_num_seqs=32,  # Reduced for larger model
                 disable_log_stats=True,
+                dtype="float16",
             )
             self.sampling_params = SamplingParams(
                 max_tokens=256,
