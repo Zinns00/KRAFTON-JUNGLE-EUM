@@ -9,7 +9,8 @@ import { useAudioDucking } from "./useAudioDucking";
 
 const WS_BASE_URL = process.env.NEXT_PUBLIC_VOICE_WS_URL || 'ws://localhost:8080/ws/audio';
 const SAMPLE_RATE = Number(process.env.NEXT_PUBLIC_AUDIO_SAMPLE_RATE) || 16000;
-const CHUNK_INTERVAL_MS = 1500;
+const CHUNK_INTERVAL_MS = 1500;  // 1.5초 청크
+const MIN_SAMPLES_TO_SEND = SAMPLE_RATE * 0.3;  // 최소 0.3초 이상의 오디오만 전송
 
 export interface RemoteTranscriptData extends TranscriptData {
     participantId: string;
@@ -296,10 +297,17 @@ export function useRemoteParticipantTranslation({
 
                 // Resample to 16kHz
                 const resampled = resample(combined, stream.audioContext.sampleRate, SAMPLE_RATE);
+
+                // 최소 샘플 수 검증 (너무 짧은 오디오는 전송하지 않음)
+                if (resampled.length < MIN_SAMPLES_TO_SEND) {
+                    console.log(`[RemoteTranslation] ${participantId}: Skipping short audio (${resampled.length} < ${MIN_SAMPLES_TO_SEND} samples)`);
+                    return;
+                }
+
                 const int16Data = float32ToInt16(resampled);
 
                 stream.ws.send(int16Data.buffer);
-                console.log(`[RemoteTranslation] ${participantId}: Sent ${int16Data.length} samples`);
+                console.log(`[RemoteTranslation] ${participantId}: Sent ${int16Data.length} samples (${(int16Data.length / SAMPLE_RATE).toFixed(1)}s)`);
             }, chunkIntervalMsRef.current);
 
             console.log(`[RemoteTranslation] ${participantId}: Audio capture started`);

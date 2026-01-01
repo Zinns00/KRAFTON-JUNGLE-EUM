@@ -55,7 +55,7 @@ class Config:
     SENTENCE_MAX_BYTES = int(BYTES_PER_SECOND * SENTENCE_MAX_DURATION_MS / 1000)
 
     # VAD settings
-    SILENCE_THRESHOLD_RMS = 50  # RMS 침묵 임계값 (낮출수록 더 민감하게 음성 감지)
+    SILENCE_THRESHOLD_RMS = 30  # RMS 침묵 임계값 (낮출수록 더 민감하게 음성 감지)
     SILENCE_DURATION_MS = 700    # 문장 끝 감지용 침묵 지속 시간
     SILENCE_FRAMES = int(SILENCE_DURATION_MS / 100)  # 100ms 프레임 기준
 
@@ -350,12 +350,16 @@ class ModelManager:
                 audio_data,
                 language=language,
                 beam_size=5,
+                best_of=5,  # 더 많은 후보 탐색
+                patience=1.0,  # 더 인내심 있게 탐색
                 vad_filter=True,
                 vad_parameters={
-                    "min_silence_duration_ms": 500,
-                    "speech_pad_ms": 200,
+                    "min_silence_duration_ms": 300,  # 더 짧은 침묵도 허용
+                    "speech_pad_ms": 300,  # 음성 패딩 증가
+                    "threshold": 0.3,  # VAD 임계값 낮춤 (더 민감)
                 },
                 condition_on_previous_text=False,
+                no_speech_threshold=0.5,  # 음성 없음 임계값 낮춤
             )
 
             text_parts = []
@@ -672,17 +676,19 @@ class ConversationServicer(conversation_pb2_grpc.ConversationServiceServicer):
         """
         오디오 버퍼 처리 및 응답 생성
 
+        Note: LiveKit에서 이미 오디오를 처리하므로 VAD 필터링 없이 바로 처리
+
         Yields:
             ChatResponse 메시지들
         """
-        # RMS 체크 (침묵 필터링)
-        rms = state.vad.calculate_rms(audio_bytes)
-        print(f"[Audio] Received {len(audio_bytes)} bytes, RMS={rms:.0f}, threshold={Config.SILENCE_THRESHOLD_RMS}")
-
-        if rms < Config.SILENCE_THRESHOLD_RMS:
-            state.silence_skipped += 1
-            print(f"[Audio] Skipped (silence): RMS {rms:.0f} < {Config.SILENCE_THRESHOLD_RMS}")
+        # 최소 오디오 길이 검증 (0.3초 이상)
+        min_bytes = int(Config.BYTES_PER_SECOND * 0.3)
+        if len(audio_bytes) < min_bytes:
+            print(f"[Audio] Skipped (too short): {len(audio_bytes)} < {min_bytes} bytes")
             return
+
+        audio_duration = len(audio_bytes) / Config.BYTES_PER_SECOND
+        print(f"[Audio] Processing {len(audio_bytes)} bytes ({audio_duration:.1f}s)")
 
         state.chunks_processed += 1
         if is_final:
@@ -701,9 +707,6 @@ class ConversationServicer(conversation_pb2_grpc.ConversationServiceServicer):
             return
 
         print(f"[STT] Result: \"{original_text}\" (confidence: {confidence:.2f})")
-
-        audio_sec = len(audio_bytes) / Config.BYTES_PER_SECOND
-        print(f"[{state.chunks_processed}] {audio_sec:.1f}s | RMS: {rms:.0f} | {source_lang}: {original_text}")
 
         # 고유 ID 생성
         transcript_id = str(uuid.uuid4())[:8]
