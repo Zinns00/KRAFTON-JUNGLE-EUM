@@ -118,7 +118,13 @@ func ConnectDB() (*gorm.DB, error) {
 		created_at timestamptz DEFAULT now()
 	);
 	CREATE INDEX IF NOT EXISTS idx_whiteboard_strokes_meeting_created ON whiteboard_strokes (meeting_id, created_at);
-	ALTER TABLE whiteboard_strokes ADD COLUMN IF NOT EXISTS deleted_at timestamptz;`
+	ALTER TABLE whiteboard_strokes ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
+	
+	-- Manual migration for User Status features
+	ALTER TABLE users ADD COLUMN IF NOT EXISTS default_status varchar(20) DEFAULT 'ONLINE';
+	ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_status_text varchar(100);
+	ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_status_emoji varchar(10);
+	ALTER TABLE users ADD COLUMN IF NOT EXISTS custom_status_expires_at timestamptz;`
 
 	if err := db.Exec(sql).Error; err != nil {
 		log.Printf("⚠️ Manual Table Creation Warning: %v", err)

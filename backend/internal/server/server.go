@@ -19,26 +19,27 @@ import (
 	"realtime-backend/internal/config"
 	"realtime-backend/internal/handler"
 	"realtime-backend/internal/model"
+	"realtime-backend/internal/presence"
 	"realtime-backend/internal/storage"
 )
 
 // Server Fiber 서버 래퍼
 type Server struct {
-	app                   *fiber.App
-	cfg                   *config.Config
-	db                    *gorm.DB
-	handler               *handler.AudioHandler
-	authHandler           *handler.AuthHandler
-	userHandler           *handler.UserHandler
-	workspaceHandler      *handler.WorkspaceHandler
-	notificationHandler   *handler.NotificationHandler
-	notificationWSHandler *handler.NotificationWSHandler
-	chatHandler           *handler.ChatHandler
-	chatWSHandler         *handler.ChatWSHandler
-	meetingHandler        *handler.MeetingHandler
-	calendarHandler       *handler.CalendarHandler
-	storageHandler        *handler.StorageHandler
-	roleHandler           *handler.RoleHandler
+	app                        *fiber.App
+	cfg                        *config.Config
+	db                         *gorm.DB
+	handler                    *handler.AudioHandler
+	authHandler                *handler.AuthHandler
+	userHandler                *handler.UserHandler
+	workspaceHandler           *handler.WorkspaceHandler
+	notificationHandler        *handler.NotificationHandler
+	notificationWSHandler      *handler.NotificationWSHandler
+	chatHandler                *handler.ChatHandler
+	chatWSHandler              *handler.ChatWSHandler
+	meetingHandler             *handler.MeetingHandler
+	calendarHandler            *handler.CalendarHandler
+	storageHandler             *handler.StorageHandler
+	roleHandler                *handler.RoleHandler
 	videoHandler               *handler.VideoHandler
 	whiteboardHandler          *handler.WhiteboardHandler
 	voiceRecordHandler         *handler.VoiceRecordHandler
@@ -64,6 +65,13 @@ func New(cfg *config.Config, db *gorm.DB) *Server {
 	})
 
 	// Auth 초기화
+	// Redis Presence Manager 초기화
+	presenceManager := presence.NewManager(
+		cfg.Redis.Addr,
+		cfg.Redis.Password,
+		cfg.Redis.DB,
+	)
+
 	jwtManager := auth.NewJWTManager(
 		cfg.Auth.JWTSecret,
 		cfg.Auth.AccessTokenExpiry,
@@ -71,10 +79,10 @@ func New(cfg *config.Config, db *gorm.DB) *Server {
 	)
 	googleAuth := auth.NewGoogleAuthenticator(cfg.Auth.GoogleClientID)
 	authHandler := handler.NewAuthHandler(db, jwtManager, googleAuth, cfg.Auth.SecureCookie)
-	userHandler := handler.NewUserHandler(db)
+	userHandler := handler.NewUserHandler(db, presenceManager)
 	workspaceHandler := handler.NewWorkspaceHandler(db)
 	notificationHandler := handler.NewNotificationHandler(db)
-	notificationWSHandler := handler.NewNotificationWSHandler()
+	notificationWSHandler := handler.NewNotificationWSHandler(db, presenceManager)
 	chatHandler := handler.NewChatHandler(db)
 	chatWSHandler := handler.NewChatWSHandler(db)
 	meetingHandler := handler.NewMeetingHandler(db)
@@ -101,21 +109,21 @@ func New(cfg *config.Config, db *gorm.DB) *Server {
 	storageHandler := handler.NewStorageHandler(db, s3Service)
 
 	return &Server{
-		app:                   app,
-		cfg:                   cfg,
-		db:                    db,
-		handler:               handler.NewAudioHandler(cfg, db),
-		authHandler:           authHandler,
-		userHandler:           userHandler,
-		workspaceHandler:      workspaceHandler,
-		notificationHandler:   notificationHandler,
-		notificationWSHandler: notificationWSHandler,
-		chatHandler:           chatHandler,
-		chatWSHandler:         chatWSHandler,
-		meetingHandler:        meetingHandler,
-		calendarHandler:       calendarHandler,
-		storageHandler:        storageHandler,
-		roleHandler:           roleHandler,
+		app:                        app,
+		cfg:                        cfg,
+		db:                         db,
+		handler:                    handler.NewAudioHandler(cfg, db),
+		authHandler:                authHandler,
+		userHandler:                userHandler,
+		workspaceHandler:           workspaceHandler,
+		notificationHandler:        notificationHandler,
+		notificationWSHandler:      notificationWSHandler,
+		chatHandler:                chatHandler,
+		chatWSHandler:              chatWSHandler,
+		meetingHandler:             meetingHandler,
+		calendarHandler:            calendarHandler,
+		storageHandler:             storageHandler,
+		roleHandler:                roleHandler,
 		videoHandler:               videoHandler,
 		whiteboardHandler:          whiteboardHandler,
 		voiceRecordHandler:         voiceRecordHandler,
@@ -183,6 +191,7 @@ func (s *Server) SetupRoutes() {
 	authGroup.Post("/logout", auth.AuthMiddleware(s.jwtManager), s.authHandler.Logout) // 인증된 사용자만
 	authGroup.Get("/me", auth.AuthMiddleware(s.jwtManager), s.authHandler.GetMe)
 	authGroup.Put("/me", auth.AuthMiddleware(s.jwtManager), s.userHandler.UpdateUser)
+	authGroup.Put("/me/status", auth.AuthMiddleware(s.jwtManager), s.userHandler.UpdateUserStatus) // 상태 업데이트 엔드포인트 추가
 
 	// User 라우트 그룹 (인증 필요)
 	userGroup := s.app.Group("/api/users", auth.AuthMiddleware(s.jwtManager))
