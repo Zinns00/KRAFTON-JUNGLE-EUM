@@ -56,12 +56,13 @@ class Config:
     CHUNK_DURATION_MS = 1500  # 1.5초 청크
     CHUNK_BYTES = int(BYTES_PER_SECOND * CHUNK_DURATION_MS / 1000)  # 48000 bytes
 
-    SENTENCE_MAX_DURATION_MS = 8000  # 문장 최대 대기 시간
-    SENTENCE_MAX_BYTES = int(BYTES_PER_SECOND * SENTENCE_MAX_DURATION_MS / 1000)
+    # 실시간 번역을 위해 최대 버퍼 시간을 3초로 제한
+    SENTENCE_MAX_DURATION_MS = 3000  # 문장 최대 대기 시간 (3초)
+    SENTENCE_MAX_BYTES = int(BYTES_PER_SECOND * SENTENCE_MAX_DURATION_MS / 1000)  # 96000 bytes
 
     # VAD settings
     SILENCE_THRESHOLD_RMS = 30  # RMS 침묵 임계값 (낮출수록 더 민감하게 음성 감지)
-    SILENCE_DURATION_MS = 700    # 문장 끝 감지용 침묵 지속 시간
+    SILENCE_DURATION_MS = 500   # 문장 끝 감지용 침묵 지속 시간 (500ms로 단축)
     SILENCE_FRAMES = int(SILENCE_DURATION_MS / 100)  # 100ms 프레임 기준
 
     # Amazon Transcribe Language Codes
@@ -107,7 +108,12 @@ class Config:
 
     # gRPC
     GRPC_PORT = int(os.getenv("GRPC_PORT", 50051))
-    MAX_WORKERS = int(os.getenv("MAX_WORKERS", 8))
+    MAX_WORKERS = int(os.getenv("MAX_WORKERS", 32))  # 동시 세션 처리를 위해 증가
+
+    # Timeouts (seconds)
+    STT_TIMEOUT = 30  # Amazon Transcribe 타임아웃
+    TRANSLATION_TIMEOUT = 15  # 번역 타임아웃
+    TTS_TIMEOUT = 10  # TTS 타임아웃
 
     # Filler words to skip TTS (common interjections/fillers)
     FILLER_WORDS = {
@@ -406,6 +412,62 @@ class SessionState:
 # Model Loaders
 # =============================================================================
 
+class AsyncLoopManager:
+    """
+    전용 asyncio 이벤트 루프 관리자
+
+    별도 스레드에서 이벤트 루프를 실행하여 asyncio.run() 블로킹 문제 해결
+    """
+    _instance = None
+    _lock = threading.Lock()
+
+    def __new__(cls):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._initialized = False
+        return cls._instance
+
+    def initialize(self):
+        if self._initialized:
+            return
+
+        self.loop = asyncio.new_event_loop()
+        self.thread = threading.Thread(target=self._run_loop, daemon=True)
+        self.thread.start()
+        self._initialized = True
+
+    def _run_loop(self):
+        asyncio.set_event_loop(self.loop)
+        self.loop.run_forever()
+
+    def run_async(self, coro, timeout: float = 30.0):
+        """
+        비동기 코루틴을 실행하고 결과를 반환
+
+        Args:
+            coro: 실행할 코루틴
+            timeout: 타임아웃 (초)
+
+        Returns:
+            코루틴 결과
+        """
+        future = asyncio.run_coroutine_threadsafe(coro, self.loop)
+        try:
+            return future.result(timeout=timeout)
+        except asyncio.TimeoutError:
+            future.cancel()
+            raise TimeoutError(f"Async operation timed out after {timeout}s")
+        except Exception as e:
+            raise e
+
+    def shutdown(self):
+        if self._initialized and self.loop.is_running():
+            self.loop.call_soon_threadsafe(self.loop.stop)
+            self.thread.join(timeout=5)
+
+
 class ModelManager:
     """모델 로딩 및 관리"""
 
@@ -427,6 +489,12 @@ class ModelManager:
         print("=" * 60)
         print("Loading AI Models...")
         print("=" * 60)
+
+        # Async Loop Manager 초기화
+        print("[0/3] Initializing Async Loop Manager...")
+        self.async_manager = AsyncLoopManager()
+        self.async_manager.initialize()
+        print("      ✓ Async Loop Manager initialized")
 
         # STT: Amazon Transcribe Streaming
         print("[1/3] Initializing Amazon Transcribe Streaming...")
@@ -489,6 +557,56 @@ class ModelManager:
 
         self._initialized = True
 
+        # 워밍업 실행
+        self._warmup()
+
+    def _warmup(self):
+        """
+        모델 워밍업 - 첫 번째 추론 지연을 방지
+
+        CUDA 커널 컴파일, 메모리 할당 등이 첫 추론 시 발생하므로
+        서버 시작 시 미리 실행하여 실제 요청 시 빠른 응답 보장
+        """
+        print("\n" + "=" * 60)
+        print("Warming up models...")
+        print("=" * 60)
+
+        warmup_start = time.time()
+
+        # 1. Qwen3 Translation 워밍업
+        print("[Warmup] Translation model (Qwen3)...")
+        try:
+            warmup_text = "안녕하세요"
+            _ = self.translate(warmup_text, "ko", "en")
+            print("         ✓ Translation warmup complete")
+        except Exception as e:
+            print(f"         ⚠ Translation warmup failed: {e}")
+
+        # 2. Amazon Polly TTS 워밍업
+        print("[Warmup] TTS model (Polly)...")
+        try:
+            warmup_tts = "Hello"
+            _, _ = self.synthesize_speech(warmup_tts, "en")
+            print("         ✓ TTS warmup complete")
+        except Exception as e:
+            print(f"         ⚠ TTS warmup failed: {e}")
+
+        # 3. WebRTC VAD 워밍업
+        print("[Warmup] VAD processor...")
+        try:
+            vad = webrtcvad.Vad(2)
+            # 30ms 프레임 (16kHz, 16-bit = 960 bytes)
+            dummy_audio = bytes(960)
+            _ = vad.is_speech(dummy_audio, 16000)
+            print("         ✓ VAD warmup complete")
+        except Exception as e:
+            print(f"         ⚠ VAD warmup failed: {e}")
+
+        warmup_time = time.time() - warmup_start
+        print("=" * 60)
+        print(f"Warmup completed in {warmup_time:.2f}s")
+        print("=" * 60 + "\n")
+
     def transcribe(self, audio_data: np.ndarray, language: str) -> Tuple[str, float]:
         """
         음성을 텍스트로 변환 (Amazon Transcribe Streaming)
@@ -522,9 +640,10 @@ class ModelManager:
             audio_int16 = (audio_data * 32768).clip(-32768, 32767).astype(np.int16)
             audio_bytes = audio_int16.tobytes()
 
-            # asyncio 이벤트 루프에서 스트리밍 전사 실행
-            result_text, confidence = asyncio.run(
-                self._transcribe_streaming(audio_bytes, transcribe_lang)
+            # 전용 이벤트 루프에서 스트리밍 전사 실행 (타임아웃 적용)
+            result_text, confidence = self.async_manager.run_async(
+                self._transcribe_streaming(audio_bytes, transcribe_lang),
+                timeout=Config.STT_TIMEOUT
             )
 
             if result_text:
@@ -534,6 +653,9 @@ class ModelManager:
 
             return result_text, confidence
 
+        except TimeoutError as e:
+            print(f"[STT Timeout] {e}")
+            return "", 0.0
         except Exception as e:
             import traceback
             print(f"[STT Error] {e}")
@@ -718,30 +840,31 @@ class ModelManager:
         if not text.strip():
             return b"", 0
 
-        # Polly 음성 ID 매핑
-        voice_map = {
-            "ko": "Seoyeon",
-            "en": "Joanna",
-            "zh": "Zhiyu",
-            "ja": "Mizuki",
-            "es": "Lucia",
-            "fr": "Lea",
-            "de": "Vicki",
-            "pt": "Camila",
-            "ru": "Tatyana",
-            "ar": "Zeina",
-            "hi": "Aditi",
-            "tr": "Filiz",
+        # Polly 음성 ID 및 엔진 매핑
+        # Neural 지원 음성: Seoyeon(ko), Joanna(en), Zhiyu(zh), Takumi(ja), Lucia(es), Lea(fr), Vicki(de), Camila(pt)
+        voice_config = {
+            "ko": ("Seoyeon", "neural"),
+            "en": ("Joanna", "neural"),
+            "zh": ("Zhiyu", "neural"),
+            "ja": ("Takumi", "neural"),  # Mizuki는 neural 미지원, Takumi 사용
+            "es": ("Lucia", "neural"),
+            "fr": ("Lea", "neural"),
+            "de": ("Vicki", "neural"),
+            "pt": ("Camila", "neural"),
+            "ru": ("Tatyana", "standard"),  # neural 미지원
+            "ar": ("Zeina", "standard"),    # neural 미지원
+            "hi": ("Aditi", "standard"),    # neural 미지원
+            "tr": ("Filiz", "standard"),    # neural 미지원
         }
 
-        voice_id = voice_map.get(target_lang, "Joanna")
+        voice_id, engine = voice_config.get(target_lang, ("Joanna", "neural"))
 
         try:
             response = self.polly_client.synthesize_speech(
                 Text=text,
                 OutputFormat="mp3",
                 VoiceId=voice_id,
-                Engine="neural" if voice_id in ["Joanna", "Seoyeon", "Zhiyu", "Mizuki"] else "standard",
+                Engine=engine,
                 SampleRate="24000",
             )
 
@@ -865,43 +988,46 @@ class ConversationServicer(conversation_pb2_grpc.ConversationServiceServicer):
                     vad = session_state.vad
                     has_speech, is_sentence_end = vad.process_chunk(audio_chunk)
 
+                    # 처리 임계값 (최소 0.5초, 최대 3초)
+                    min_speech_bytes = int(Config.BYTES_PER_SECOND * 0.5)  # 0.5초
+                    max_buffer_bytes = Config.SENTENCE_MAX_BYTES  # 3초
+
                     if has_speech:
                         # 음성 프레임만 추출하여 버퍼에 누적
                         speech_audio = vad.filter_speech(audio_chunk)
                         if speech_audio:
                             session_state.audio_buffer.extend(speech_audio)
                             speech_duration = len(speech_audio) / Config.BYTES_PER_SECOND
-                            print(f"[VAD] Speech detected: {len(speech_audio)} bytes ({speech_duration:.2f}s) from {chunk_bytes} bytes ({audio_duration:.2f}s)")
+                            buffer_total = len(session_state.audio_buffer) / Config.BYTES_PER_SECOND
+                            print(f"[VAD] Speech: +{speech_duration:.2f}s, buffer: {buffer_total:.2f}s")
 
-                    elif is_sentence_end and len(session_state.audio_buffer) > 0:
-                        # 문장 끝 감지 - 버퍼 처리
+                    # 문장 끝 감지 또는 버퍼가 3초 이상이면 처리
+                    should_process = False
+                    process_reason = ""
+
+                    if is_sentence_end and len(session_state.audio_buffer) >= min_speech_bytes:
+                        should_process = True
+                        process_reason = "sentence_end"
+                    elif len(session_state.audio_buffer) >= max_buffer_bytes:
+                        should_process = True
+                        process_reason = "buffer_full"
+
+                    if should_process:
                         process_bytes = bytes(session_state.audio_buffer)
                         session_state.audio_buffer.clear()
+                        if process_reason == "buffer_full":
+                            vad.reset()  # 버퍼 오버플로우 시에만 VAD 리셋
 
                         buffer_duration = len(process_bytes) / Config.BYTES_PER_SECOND
-                        print(f"[VAD] Sentence end detected, processing {len(process_bytes)} bytes ({buffer_duration:.2f}s)")
+                        print(f"[VAD] Processing ({process_reason}): {buffer_duration:.2f}s")
 
-                        # 최소 0.3초 이상의 음성만 처리
-                        min_speech_bytes = int(Config.BYTES_PER_SECOND * 0.3)
-                        if len(process_bytes) >= min_speech_bytes:
+                        # 오디오 처리 (에러 발생해도 스트림 유지)
+                        try:
                             for response in self._process_audio(session_state, process_bytes, True):
                                 yield response
-                        else:
-                            print(f"[VAD] Skipping too short audio: {len(process_bytes)} bytes < {min_speech_bytes} bytes")
-                            session_state.silence_skipped += 1
-
-                    # 버퍼가 너무 커지면 강제 처리 (8초 제한)
-                    max_buffer_bytes = Config.SENTENCE_MAX_BYTES
-                    if len(session_state.audio_buffer) >= max_buffer_bytes:
-                        process_bytes = bytes(session_state.audio_buffer)
-                        session_state.audio_buffer.clear()
-                        vad.reset()
-
-                        buffer_duration = len(process_bytes) / Config.BYTES_PER_SECOND
-                        print(f"[VAD] Buffer overflow, force processing {len(process_bytes)} bytes ({buffer_duration:.2f}s)")
-
-                        for response in self._process_audio(session_state, process_bytes, True):
-                            yield response
+                        except Exception as proc_err:
+                            print(f"[Audio Processing Error] {proc_err}")
+                            # 에러 발생해도 스트림 계속 유지
 
                 # 세션 종료
                 elif payload_type == 'session_end':
@@ -915,8 +1041,11 @@ class ConversationServicer(conversation_pb2_grpc.ConversationServiceServicer):
                             process_bytes = bytes(session_state.audio_buffer)
                             session_state.audio_buffer.clear()
 
-                            for response in self._process_audio(session_state, process_bytes, True):
-                                yield response
+                            try:
+                                for response in self._process_audio(session_state, process_bytes, True):
+                                    yield response
+                            except Exception as proc_err:
+                                print(f"[Session End Processing Error] {proc_err}")
                         else:
                             session_state.audio_buffer.clear()
 

@@ -94,6 +94,23 @@ function getParticipantProfileImg(participant: RemoteParticipant | LocalParticip
     return undefined;
 }
 
+// Parse participant metadata to extract sourceLanguage (the language they speak)
+function getParticipantSourceLanguage(participant: RemoteParticipant | LocalParticipant, fallback: TargetLanguage = 'ko'): TargetLanguage {
+    try {
+        if (participant.metadata) {
+            const metadata = JSON.parse(participant.metadata);
+            // Check various possible field names for source language
+            const lang = metadata.sourceLanguage || metadata.source_language || metadata.speakingLanguage || metadata.language;
+            if (lang && typeof lang === 'string') {
+                return lang as TargetLanguage;
+            }
+        }
+    } catch {
+        // Metadata is not valid JSON
+    }
+    return fallback;
+}
+
 // RMS 계산 (음성 활동 감지용)
 function calculateRMS(samples: Float32Array): number {
     if (samples.length === 0) return 0;
@@ -489,10 +506,20 @@ export function useRemoteParticipantTranslation({
         });
 
         try {
-            console.log(`[RemoteTranslation] Creating stream for ${participantId}`);
+            // 원격 참가자의 sourceLanguage를 그들의 메타데이터에서 가져옴
+            // fallback으로 현재 설정된 sourceLanguage 사용
+            const remoteSourceLang = getParticipantSourceLanguage(participant, sourceLanguageRef.current);
+
+            console.log(`[RemoteTranslation] Creating stream for ${participantId}`, {
+                remoteSourceLang,  // 원격 참가자가 말하는 언어
+                myTargetLang: targetLanguageRef.current,  // 내가 듣고 싶은 언어
+                participantMetadata: participant.metadata,
+            });
 
             // Create WebSocket with participantId and language params
-            const wsUrl = `${WS_BASE_URL}?sourceLang=${sourceLanguageRef.current}&targetLang=${targetLanguageRef.current}&participantId=${encodeURIComponent(participantId)}`;
+            // sourceLang = 원격 참가자가 말하는 언어 (그들의 메타데이터에서)
+            // targetLang = 내가 듣고 싶은 언어 (번역 대상)
+            const wsUrl = `${WS_BASE_URL}?sourceLang=${remoteSourceLang}&targetLang=${targetLanguageRef.current}&participantId=${encodeURIComponent(participantId)}`;
             const ws = new WebSocket(wsUrl);
             ws.binaryType = 'arraybuffer';
 
