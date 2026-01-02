@@ -159,8 +159,8 @@ function SubtitleItem({
 
         animationRef.current = requestAnimationFrame(animate);
 
-        // 5초 후 자동 제거
-        exitRef.current = setTimeout(onComplete, 5000);
+        // 3초 후 자동 제거 (더 빠르게)
+        exitRef.current = setTimeout(onComplete, 3000);
 
         return () => {
             if (animationRef.current) cancelAnimationFrame(animationRef.current);
@@ -262,10 +262,10 @@ export default function SubtitleOverlay({
                 processedRef.current.set(key, text);
                 subtitleStore.addOrUpdate(speaker, text, originalText || undefined);
 
-                // 10초 후 캐시 정리
+                // 5초 후 캐시 정리 (자막 표시 시간에 맞춤)
                 setTimeout(() => {
                     processedRef.current.delete(key);
-                }, 10000);
+                }, 5000);
             }
         }
     }, [text, originalText, speaker]);

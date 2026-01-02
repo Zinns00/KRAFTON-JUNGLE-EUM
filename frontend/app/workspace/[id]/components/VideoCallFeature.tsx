@@ -173,7 +173,7 @@ function VideoCallContent({
             setCurrentOriginal(data.original);
             setCurrentTranscript(data.translated);
 
-            // 5초 후 자막 클리어
+            // 3초 후 자막 클리어 (더 빠르게)
             if (transcriptTimeoutRef.current) {
                 clearTimeout(transcriptTimeoutRef.current);
             }
@@ -181,7 +181,7 @@ function VideoCallContent({
                 setCurrentTranscript(null);
                 setCurrentOriginal(null);
                 setCurrentSpeaker(null);
-            }, 5000);
+            }, 3000);
         }
     }, [isTranslationOpen, targetLanguage]);
 

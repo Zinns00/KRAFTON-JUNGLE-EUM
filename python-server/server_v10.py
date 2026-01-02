@@ -35,13 +35,23 @@ import torch
 import boto3
 import webrtcvad
 
-# faster-whisper for STT (replaces Amazon Transcribe)
+# faster-whisper for STT (optional)
 try:
     from faster_whisper import WhisperModel
     FASTER_WHISPER_AVAILABLE = True
 except ImportError:
     FASTER_WHISPER_AVAILABLE = False
-    print("[WARNING] faster-whisper not installed. Install with: pip install faster-whisper")
+    print("[INFO] faster-whisper not installed. Using Amazon Transcribe.")
+
+# Amazon Transcribe Streaming
+try:
+    from amazon_transcribe.client import TranscribeStreamingClient
+    from amazon_transcribe.handlers import TranscriptResultStreamHandler
+    from amazon_transcribe.model import TranscriptEvent
+    AMAZON_TRANSCRIBE_AVAILABLE = True
+except ImportError:
+    AMAZON_TRANSCRIBE_AVAILABLE = False
+    print("[WARNING] amazon-transcribe not installed. Install with: pip install amazon-transcribe")
 
 # Qwen3 Translation Model
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -169,8 +179,8 @@ class Config:
     SILENCE_DURATION_MS = 350  # 문장 끝 감지용 침묵 지속 시간
     SILENCE_FRAMES = int(SILENCE_DURATION_MS / 100)
 
-    # STT Backend: "whisper" (local, fast) or "transcribe" (AWS, slow)
-    STT_BACKEND = os.getenv("STT_BACKEND", "whisper")  # Default to whisper
+    # STT Backend: "whisper" (local, fast) or "transcribe" (AWS)
+    STT_BACKEND = os.getenv("STT_BACKEND", "transcribe")  # Default to Amazon Transcribe
 
     # faster-whisper model settings
     WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL", "large-v3-turbo")  # Options: tiny, base, small, medium, large-v3, large-v3-turbo
@@ -180,7 +190,7 @@ class Config:
     # Translation backend: "aws" (fast) or "qwen" (local LLM)
     TRANSLATION_BACKEND = os.getenv("TRANSLATION_BACKEND", "aws")
 
-    # Language code mappings
+    # Language code mappings for Whisper
     WHISPER_LANG_CODES = {
         "ko": "ko",    # Korean
         "en": "en",    # English
@@ -194,6 +204,22 @@ class Config:
         "ar": "ar",    # Arabic
         "hi": "hi",    # Hindi
         "tr": "tr",    # Turkish
+    }
+
+    # Amazon Transcribe Language Codes
+    TRANSCRIBE_LANG_CODES = {
+        "ko": "ko-KR",    # Korean
+        "en": "en-US",    # English (US)
+        "ja": "ja-JP",    # Japanese
+        "zh": "zh-CN",    # Chinese (Mandarin)
+        "es": "es-US",    # Spanish (US)
+        "fr": "fr-FR",    # French
+        "de": "de-DE",    # German
+        "pt": "pt-BR",    # Portuguese (Brazil)
+        "ru": "ru-RU",    # Russian
+        "ar": "ar-SA",    # Arabic (Saudi Arabia)
+        "hi": "hi-IN",    # Hindi
+        "tr": "tr-TR",    # Turkish
     }
 
     # AWS Translate Language Codes (ISO 639-1)
@@ -487,7 +513,57 @@ class SessionState:
 
 
 # =============================================================================
-# Model Manager with faster-whisper
+# Async Loop Manager (for Amazon Transcribe Streaming)
+# =============================================================================
+
+class AsyncLoopManager:
+    """
+    전용 asyncio 이벤트 루프 관리자
+    별도 스레드에서 이벤트 루프를 실행하여 asyncio.run() 블로킹 문제 해결
+    """
+    _instance = None
+    _lock = threading.Lock()
+
+    def __new__(cls):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._initialized = False
+        return cls._instance
+
+    def initialize(self):
+        if self._initialized:
+            return
+
+        self.loop = asyncio.new_event_loop()
+        self.thread = threading.Thread(target=self._run_loop, daemon=True)
+        self.thread.start()
+        self._initialized = True
+
+    def _run_loop(self):
+        asyncio.set_event_loop(self.loop)
+        self.loop.run_forever()
+
+    def run_async(self, coro, timeout: float = 30.0):
+        """비동기 코루틴을 실행하고 결과를 반환"""
+        future = asyncio.run_coroutine_threadsafe(coro, self.loop)
+        try:
+            return future.result(timeout=timeout)
+        except asyncio.TimeoutError:
+            future.cancel()
+            raise TimeoutError(f"Async operation timed out after {timeout}s")
+        except Exception as e:
+            raise e
+
+    def shutdown(self):
+        if self._initialized and self.loop.is_running():
+            self.loop.call_soon_threadsafe(self.loop.stop)
+            self.thread.join(timeout=5)
+
+
+# =============================================================================
+# Model Manager with Amazon Transcribe / faster-whisper
 # =============================================================================
 
 class ModelManager:
@@ -507,11 +583,20 @@ class ModelManager:
             return
 
         print("=" * 70)
-        print("Loading AI Models (v10 - faster-whisper)")
+        print("Loading AI Models (v10)")
         print("=" * 70)
 
-        # 1. faster-whisper STT
-        if FASTER_WHISPER_AVAILABLE and Config.STT_BACKEND == "whisper":
+        # 0. Async Loop Manager (for Amazon Transcribe)
+        print("[0/4] Initializing Async Loop Manager...")
+        self.async_manager = AsyncLoopManager()
+        self.async_manager.initialize()
+        print("      ✓ Async Loop Manager initialized")
+
+        # 1. STT Backend
+        self.whisper_model = None
+        self.transcribe_region = Config.AWS_REGION
+
+        if Config.STT_BACKEND == "whisper" and FASTER_WHISPER_AVAILABLE:
             print(f"[1/4] Loading faster-whisper ({Config.WHISPER_MODEL_SIZE})...")
             print(f"      Device: {Config.WHISPER_DEVICE}, Compute: {Config.WHISPER_COMPUTE_TYPE}")
 
@@ -521,11 +606,15 @@ class ModelManager:
                 compute_type=Config.WHISPER_COMPUTE_TYPE,
             )
             print("      ✓ faster-whisper loaded")
+        elif Config.STT_BACKEND == "transcribe" and AMAZON_TRANSCRIBE_AVAILABLE:
+            print(f"[1/4] Initializing Amazon Transcribe Streaming...")
+            print(f"      Region: {self.transcribe_region}")
+            print("      ✓ Amazon Transcribe initialized")
         else:
-            print("[1/4] faster-whisper not available, using Amazon Transcribe fallback")
-            self.whisper_model = None
-            # Initialize Amazon Transcribe if needed
-            self.transcribe_region = Config.AWS_REGION
+            print("[1/4] ⚠ No STT backend available!")
+            print(f"      STT_BACKEND={Config.STT_BACKEND}")
+            print(f"      WHISPER_AVAILABLE={FASTER_WHISPER_AVAILABLE}")
+            print(f"      TRANSCRIBE_AVAILABLE={AMAZON_TRANSCRIBE_AVAILABLE}")
 
         # 2. Qwen3 Translation Model
         print(f"[2/4] Loading Qwen3 {Config.QWEN_MODEL}...")
@@ -668,9 +757,77 @@ class ModelManager:
 
         return False
 
+    async def _transcribe_streaming(self, audio_bytes: bytes, language_code: str) -> Tuple[str, float]:
+        """
+        Amazon Transcribe Streaming을 사용한 음성 전사
+
+        Args:
+            audio_bytes: int16 PCM audio bytes
+            language_code: Amazon Transcribe 언어 코드 (예: "ko-KR", "en-US")
+
+        Returns:
+            (text, confidence)
+        """
+        client = TranscribeStreamingClient(region=self.transcribe_region)
+
+        # 전사 결과를 수집할 핸들러
+        class ResultHandler(TranscriptResultStreamHandler):
+            def __init__(self, stream):
+                super().__init__(stream)
+                self.transcripts: List[Tuple[str, float]] = []
+
+            async def handle_transcript_event(self, event: TranscriptEvent):
+                results = event.transcript.results
+                for result in results:
+                    if not result.is_partial:  # 최종 결과만 처리
+                        for alt in result.alternatives:
+                            text = alt.transcript.strip()
+                            conf = alt.confidence if hasattr(alt, 'confidence') and alt.confidence else 0.95
+                            if text:
+                                self.transcripts.append((text, conf))
+                                DebugLogger.log("TRANSCRIBE", f"Segment: {text[:50]}", {"conf": f"{conf:.2f}"})
+
+        try:
+            # 스트리밍 세션 시작
+            stream = await client.start_stream_transcription(
+                language_code=language_code,
+                media_sample_rate_hz=Config.SAMPLE_RATE,
+                media_encoding="pcm",
+            )
+
+            handler = ResultHandler(stream.output_stream)
+
+            # 오디오를 청크로 나누어 전송 (8KB 청크)
+            chunk_size = 8192
+            async def send_audio():
+                for i in range(0, len(audio_bytes), chunk_size):
+                    chunk = audio_bytes[i:i + chunk_size]
+                    await stream.input_stream.send_audio_event(audio_chunk=chunk)
+                await stream.input_stream.end_stream()
+
+            # 오디오 전송과 결과 수신을 동시에 처리
+            await asyncio.gather(
+                send_audio(),
+                handler.handle_events()
+            )
+
+            # 결과 조합
+            if handler.transcripts:
+                texts = [t[0] for t in handler.transcripts]
+                confidences = [t[1] for t in handler.transcripts]
+                full_text = " ".join(texts)
+                avg_confidence = sum(confidences) / len(confidences) if confidences else 0.0
+                return full_text, avg_confidence
+            else:
+                return "", 0.0
+
+        except Exception as e:
+            DebugLogger.log("TRANSCRIBE_ERROR", f"Amazon Transcribe failed: {e}")
+            return "", 0.0
+
     def transcribe(self, audio_data: np.ndarray, language: str) -> Tuple[str, float]:
         """
-        Speech to Text using faster-whisper
+        Speech to Text using Amazon Transcribe or faster-whisper
 
         Args:
             audio_data: float32 normalized audio array [-1, 1]
@@ -692,7 +849,8 @@ class ModelManager:
             "duration_sec": f"{audio_duration:.2f}",
             "rms": f"{audio_rms:.4f}",
             "max": f"{np.max(np.abs(audio_data)):.4f}",
-            "language": language
+            "language": language,
+            "backend": Config.STT_BACKEND
         })
 
         # Skip if audio is too quiet (silence)
@@ -709,11 +867,30 @@ class ModelManager:
             return "", 0.0
 
         try:
-            if self.whisper_model:
+            result_text = ""
+            confidence = 0.0
+
+            # ===== Amazon Transcribe Backend =====
+            if Config.STT_BACKEND == "transcribe" and AMAZON_TRANSCRIBE_AVAILABLE:
+                # Get the Transcribe language code
+                transcribe_lang = Config.TRANSCRIBE_LANG_CODES.get(language, "en-US")
+                DebugLogger.log("STT_LANG", f"Using Amazon Transcribe: {transcribe_lang} (from: {language})")
+
+                # Convert float32 to int16 bytes
+                audio_int16 = (audio_data * 32768).clip(-32768, 32767).astype(np.int16)
+                audio_bytes = audio_int16.tobytes()
+
+                # Run streaming transcription via AsyncLoopManager
+                result_text, confidence = self.async_manager.run_async(
+                    self._transcribe_streaming(audio_bytes, transcribe_lang),
+                    timeout=Config.STT_TIMEOUT
+                )
+
+            # ===== faster-whisper Backend =====
+            elif self.whisper_model:
                 # Get the Whisper language code
                 whisper_lang = Config.WHISPER_LANG_CODES.get(language, "en")
-
-                DebugLogger.log("STT_LANG", f"Using language: {whisper_lang} (from: {language})")
+                DebugLogger.log("STT_LANG", f"Using faster-whisper: {whisper_lang} (from: {language})")
 
                 # Use faster-whisper with STRICT language enforcement
                 segments, info = self.whisper_model.transcribe(
@@ -729,11 +906,10 @@ class ModelManager:
                     condition_on_previous_text=False,  # Disable for real-time
                     without_timestamps=True,  # Faster processing
                     suppress_blank=True,  # Suppress blank outputs
-                    # Suppress common hallucination tokens
-                    suppress_tokens=[-1],  # Let VAD handle this
-                    no_speech_threshold=0.5,  # Higher threshold to filter out non-speech
-                    log_prob_threshold=-0.8,  # Filter low-confidence segments
-                    compression_ratio_threshold=2.0,  # Filter repetitive segments
+                    suppress_tokens=[-1],
+                    no_speech_threshold=0.5,
+                    log_prob_threshold=-0.8,
+                    compression_ratio_threshold=2.0,
                 )
 
                 # Collect all segments
@@ -741,15 +917,15 @@ class ModelManager:
                 for segment in segments:
                     segment_text = segment.text.strip()
 
-                    # Skip segments with low probability or that are hallucinations
+                    # Skip segments with high no_speech probability
                     if segment.no_speech_prob > 0.5:
-                        DebugLogger.log("STT_FILTER", f"Filtered high no_speech_prob segment", {
+                        DebugLogger.log("STT_FILTER", f"Filtered high no_speech_prob", {
                             "text": segment_text[:30],
                             "no_speech_prob": f"{segment.no_speech_prob:.2f}"
                         })
                         continue
 
-                    # Check for hallucination
+                    # Check for hallucination (Whisper-specific)
                     if self._is_hallucination(segment_text):
                         DebugLogger.log("STT_FILTER", f"Filtered hallucination", {
                             "text": segment_text[:50]
@@ -760,20 +936,19 @@ class ModelManager:
                         texts.append(segment_text)
 
                 result_text = " ".join(texts).strip()
+                confidence = info.language_probability if info.language_probability else 0.95
 
-                # Final hallucination check on combined text
+                # Final hallucination check on combined text (Whisper-specific)
                 if self._is_hallucination(result_text):
                     DebugLogger.log("STT_FILTER", f"Filtered combined hallucination", {
                         "text": result_text[:50]
                     })
                     result_text = ""
 
-                confidence = info.language_probability if info.language_probability else 0.95
-
             else:
-                # Fallback: No STT available
-                result_text = ""
-                confidence = 0.0
+                # No STT backend available
+                DebugLogger.log("STT_ERROR", "No STT backend available")
+                return "", 0.0
 
             latency_ms = (time.time() - start_time) * 1000
 
@@ -784,6 +959,9 @@ class ModelManager:
 
             return result_text, confidence
 
+        except TimeoutError as e:
+            DebugLogger.log("STT_TIMEOUT", f"STT timed out: {e}")
+            return "", 0.0
         except Exception as e:
             import traceback
             DebugLogger.log("STT_ERROR", f"Transcription failed: {e}", {
@@ -1352,7 +1530,10 @@ def serve():
     print("Python AI Server v10 - Real-time Optimized")
     print("=" * 70)
     print(f"STT Backend: {Config.STT_BACKEND}")
-    print(f"Whisper Model: {Config.WHISPER_MODEL_SIZE}")
+    if Config.STT_BACKEND == "whisper":
+        print(f"Whisper Model: {Config.WHISPER_MODEL_SIZE}")
+    else:
+        print(f"Transcribe Region: {Config.AWS_REGION}")
     print(f"Translation Backend: {Config.TRANSLATION_BACKEND}")
     print(f"Debug Logging: {'ENABLED' if DebugLogger.ENABLED else 'DISABLED'}")
     print("=" * 70 + "\n")
@@ -1376,8 +1557,16 @@ def serve():
     server.add_insecure_port(f'[::]:{Config.GRPC_PORT}')
     server.start()
 
+    # STT 백엔드 표시
+    if Config.STT_BACKEND == "transcribe":
+        stt_display = "Amazon Transcribe Streaming"
+    elif Config.STT_BACKEND == "whisper" and FASTER_WHISPER_AVAILABLE:
+        stt_display = f"faster-whisper ({Config.WHISPER_MODEL_SIZE})"
+    else:
+        stt_display = "None (check configuration)"
+
     print(f"\n🚀 gRPC Server started on port {Config.GRPC_PORT}")
-    print(f"📡 STT: {'faster-whisper' if FASTER_WHISPER_AVAILABLE else 'Amazon Transcribe'}")
+    print(f"📡 STT: {stt_display}")
     print(f"🌐 Translation: {Config.TRANSLATION_BACKEND}")
     print("Press Ctrl+C to stop\n")
 
