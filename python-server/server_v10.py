@@ -180,12 +180,17 @@ class Config:
     SILENCE_FRAMES = int(SILENCE_DURATION_MS / 100)
 
     # STT Backend: "whisper" (local, fast) or "transcribe" (AWS)
-    STT_BACKEND = os.getenv("STT_BACKEND", "transcribe")  # Default to Amazon Transcribe
+    STT_BACKEND = os.getenv("STT_BACKEND", "whisper")  # Default to faster-whisper (local GPU)
 
-    # faster-whisper model settings
+    # faster-whisper model settings (Option A: Speed Optimized)
     WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL", "large-v3-turbo")  # Options: tiny, base, small, medium, large-v3, large-v3-turbo
     WHISPER_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-    WHISPER_COMPUTE_TYPE = "float16" if torch.cuda.is_available() else "int8"
+    WHISPER_COMPUTE_TYPE = "int8_float16" if torch.cuda.is_available() else "int8"  # int8_float16: 더 빠르고 메모리 절약
+
+    # Real-time optimized parameters
+    WHISPER_BEAM_SIZE = 1       # 5 → 1: 가장 큰 속도 향상
+    WHISPER_BEST_OF = 1         # 5 → 1: 속도 향상
+    WHISPER_TEMPERATURE = 0.0   # 고정값 (fallback 없음)
 
     # Translation backend: "aws" (fast) or "qwen" (local LLM)
     TRANSLATION_BACKEND = os.getenv("TRANSLATION_BACKEND", "aws")
@@ -500,7 +505,7 @@ class RoomCacheManager:
                     self.pending_requests[cache_key].set()
                     del self.pending_requests[cache_key]
 
-    def get_or_create_translation(self, text: str, source_lang: str, target_lang: str,
+    def get_or_create_translation(self, room_id: str, text: str, source_lang: str, target_lang: str,
                                    translate_fn) -> Tuple[str, bool]:
         """
         번역 결과 캐시에서 가져오거나 새로 생성
@@ -508,13 +513,14 @@ class RoomCacheManager:
         Returns:
             (translated_text, was_cached)
         """
-        cache_key = f"{source_lang}:{target_lang}:{hash(text)}"
+        # room_id를 포함하여 방 간 캐시 누출 방지
+        cache_key = f"{room_id}:{source_lang}:{target_lang}:{hash(text)}"
 
         with self._cache_lock:
             if cache_key in self.translation_cache:
                 entry = self.translation_cache[cache_key]
                 if not entry.is_expired():
-                    DebugLogger.log("CACHE_HIT", "Translation cache hit", {"key": cache_key[:24]})
+                    DebugLogger.log("CACHE_HIT", "Translation cache hit", {"room": room_id[:8], "key": cache_key[:24]})
                     return entry.value, True
 
         # 실제 번역 처리
@@ -526,11 +532,11 @@ class RoomCacheManager:
                 value=translated,
                 created_at=time.time()
             )
-            DebugLogger.log("CACHE_SET", "Translation cached", {"key": cache_key[:24]})
+            DebugLogger.log("CACHE_SET", "Translation cached", {"room": room_id[:8], "key": cache_key[:24]})
 
         return translated, False
 
-    def get_or_create_tts(self, text: str, target_lang: str,
+    def get_or_create_tts(self, room_id: str, text: str, target_lang: str,
                           synthesize_fn) -> Tuple[bytes, int, bool]:
         """
         TTS 결과 캐시에서 가져오거나 새로 생성
@@ -538,13 +544,14 @@ class RoomCacheManager:
         Returns:
             (audio_bytes, duration_ms, was_cached)
         """
-        cache_key = f"tts:{target_lang}:{hash(text)}"
+        # room_id를 포함하여 방 간 캐시 누출 방지
+        cache_key = f"{room_id}:tts:{target_lang}:{hash(text)}"
 
         with self._cache_lock:
             if cache_key in self.tts_cache:
                 entry = self.tts_cache[cache_key]
                 if not entry.is_expired():
-                    DebugLogger.log("CACHE_HIT", "TTS cache hit", {"key": cache_key[:24]})
+                    DebugLogger.log("CACHE_HIT", "TTS cache hit", {"room": room_id[:8], "key": cache_key[:24]})
                     return entry.value[0], entry.value[1], True
 
         # 실제 TTS 처리
@@ -556,7 +563,7 @@ class RoomCacheManager:
                 value=(audio_bytes, duration_ms),
                 created_at=time.time()
             )
-            DebugLogger.log("CACHE_SET", "TTS cached", {"key": cache_key[:24]})
+            DebugLogger.log("CACHE_SET", "TTS cached", {"room": room_id[:8], "key": cache_key[:24]})
 
         return audio_bytes, duration_ms, False
 
@@ -1139,22 +1146,23 @@ class ModelManager:
                 whisper_lang = Config.WHISPER_LANG_CODES.get(language, "en")
                 DebugLogger.log("STT_LANG", f"Using faster-whisper: {whisper_lang} (from: {language})")
 
-                # Use faster-whisper with STRICT language enforcement
+                # Use faster-whisper with STRICT language enforcement (Option A: Speed Optimized)
                 segments, info = self.whisper_model.transcribe(
                     audio_data,
                     language=whisper_lang,  # FORCE this language (no auto-detect)
-                    beam_size=5,
-                    best_of=5,
+                    beam_size=Config.WHISPER_BEAM_SIZE,      # 1: 최대 속도
+                    best_of=Config.WHISPER_BEST_OF,          # 1: 최대 속도
+                    temperature=Config.WHISPER_TEMPERATURE,  # 0: 고정값
                     vad_filter=True,  # Built-in VAD for noise filtering
                     vad_parameters=dict(
-                        min_silence_duration_ms=300,
-                        speech_pad_ms=200,
+                        min_silence_duration_ms=200,  # 300 → 200: 더 빠른 문장 끝 감지
+                        speech_pad_ms=100,            # 200 → 100: 패딩 줄이기
                     ),
                     condition_on_previous_text=False,  # Disable for real-time
                     without_timestamps=True,  # Faster processing
                     suppress_blank=True,  # Suppress blank outputs
                     suppress_tokens=[-1],
-                    no_speech_threshold=0.5,
+                    no_speech_threshold=0.6,  # 0.5 → 0.6: 노이즈 필터링 강화
                     log_prob_threshold=-0.8,
                     compression_ratio_threshold=2.0,
                 )
@@ -1675,6 +1683,7 @@ class ConversationServicer(conversation_pb2_grpc.ConversationServiceServicer):
                 return self.models.translate(text, src, tgt)
 
             translated_text, trans_cached = self.models.room_cache.get_or_create_translation(
+                room_id=state.room_id,
                 text=original_text,
                 source_lang=source_lang,
                 target_lang=target_lang,
@@ -1741,6 +1750,7 @@ class ConversationServicer(conversation_pb2_grpc.ConversationServiceServicer):
                 return self.models.synthesize_speech(text, lang)
 
             audio_data, duration_ms, tts_cached = self.models.room_cache.get_or_create_tts(
+                room_id=state.room_id,
                 text=translated_text,
                 target_lang=target_lang,
                 synthesize_fn=do_synthesize
